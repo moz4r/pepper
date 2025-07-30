@@ -1,19 +1,22 @@
 # -*- coding: utf-8 -*-
-import qi
 import time
+from naoqi import ALProxy
 
-class MyClass(object):
+class MyClass(GeneratedClass):
     def __init__(self):
-        self.session = None
+        GeneratedClass.__init__(self)
         self.tts = None
         self.motion = None
 
     def onLoad(self):
-        # Connexion automatique à la session en cours (Choregraphe fournit déjà la session)
         try:
-            self.session = self.session  # fourni par Choregraphe
-            self.tts = self.session.service("ALTextToSpeech")
-            self.motion = self.session.service("ALMotion")
+            # Comme le script tourne directement sur le robot
+            robot_ip = "127.0.0.1"
+            robot_port = 9559
+
+            self.tts = ALProxy("ALTextToSpeech", robot_ip, robot_port)
+            self.motion = ALProxy("ALMotion", robot_ip, robot_port)
+
             print("[Choregraphe] Services initialisés")
         except Exception as e:
             print("[ERREUR] Impossible d’initialiser les services :", e)
@@ -23,14 +26,11 @@ class MyClass(object):
 
     def onInput_onStart(self):
         try:
-            # Réveil du robot
             self.motion.wakeUp()
             print("[OK] Robot réveillé")
 
-            # Parole
             self.tts.say("Bonjour, je suis Pepper !")
 
-            # Mouvement de la tête
             names = ["HeadYaw", "HeadPitch"]
             angles = [0.5, -0.3]
             self.motion.setAngles(names, angles, 0.2)
@@ -38,7 +38,6 @@ class MyClass(object):
 
             time.sleep(5)
 
-            # Retour au centre
             self.motion.setAngles(names, [0.0, 0.0], 0.2)
             print("[OK] Tête revenue au centre")
 
@@ -46,13 +45,9 @@ class MyClass(object):
         except Exception as e:
             print("[ERREUR] Problème pendant l’exécution :", e)
 
-        # Fin du script
         self.onStopped()
 
     def onInput_onStop(self):
         print("[Choregraphe] Arrêt demandé")
         self.onUnload()
         self.onStopped()
-
-    def onStopped(self):
-        pass  # sera remplacé automatiquement par Choregraphe
