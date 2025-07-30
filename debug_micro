@@ -1,0 +1,64 @@
+# -*- coding: utf-8 -*-
+import qi
+import time
+import sys
+
+PEPPER_IP = "127.0.0.1"
+PEPPER_PORT = 9559
+
+def main():
+    session = qi.Session()
+    session.connect("tcp://{}:{}".format(PEPPER_IP, PEPPER_PORT))
+
+    print("[OK] Connecté à NAOqi")
+
+    tts = session.service("ALTextToSpeech")
+    asr = session.service("ALSpeechRecognition")
+    memory = session.service("ALMemory")
+    motion = session.service("ALMotion")
+    audio = session.service("ALAudioDevice")
+
+    motion.wakeUp()
+
+    # Vocabulaire
+    vocabulary = ["pepper", "bonjour", "au revoir", "test"]
+    print("[DEBUG] Vocabulaire :", vocabulary)
+
+    asr.setLanguage("French")
+    asr.pause(True)
+    asr.setVocabulary(vocabulary, False)
+    asr.pause(False)
+    print("[OK] ASR configuré et actif")
+
+    # Debug énergie audio
+    audio.enableEnergyComputation()
+    print("[DEBUG] Énergie micro au démarrage :", audio.getFrontMicEnergy())
+
+    # Callback
+    def on_word_recognized(value):
+        print("[DEBUG] Event WordRecognized reçu :", value)
+        if isinstance(value, list) and len(value) >= 2:
+            phrase, conf = value[0], value[1]
+            print("[INFO] Reconnu :", phrase, "confiance :", conf)
+            if conf > 0.4:
+                tts.say("Tu as dit " + phrase)
+
+    subscriber = memory.subscriber("WordRecognized")
+    subscriber.signal.connect(on_word_recognized)
+    print("[OK] Abonné à WordRecognized")
+
+    tts.say("Je suis prêt. Parle-moi.")
+    print("[INFO] Parle maintenant.")
+
+    try:
+        while True:
+            level = audio.getFrontMicEnergy()
+            print("[DEBUG] Énergie micro :", level)
+            time.sleep(2)
+    except KeyboardInterrupt:
+        print("\n[STOP] Fin du test")
+        asr.pause(True)
+        motion.rest()
+
+if __name__ == "__main__":
+    main()
