@@ -1,0 +1,58 @@
+# -*- coding: utf-8 -*-
+import qi
+import time
+
+class MyClass(object):
+    def __init__(self):
+        self.session = None
+        self.tts = None
+        self.motion = None
+
+    def onLoad(self):
+        # Connexion automatique à la session en cours (Choregraphe fournit déjà la session)
+        try:
+            self.session = self.session  # fourni par Choregraphe
+            self.tts = self.session.service("ALTextToSpeech")
+            self.motion = self.session.service("ALMotion")
+            print("[Choregraphe] Services initialisés")
+        except Exception as e:
+            print("[ERREUR] Impossible d’initialiser les services :", e)
+
+    def onUnload(self):
+        print("[Choregraphe] Script déchargé")
+
+    def onInput_onStart(self):
+        try:
+            # Réveil du robot
+            self.motion.wakeUp()
+            print("[OK] Robot réveillé")
+
+            # Parole
+            self.tts.say("Bonjour, je suis Pepper !")
+
+            # Mouvement de la tête
+            names = ["HeadYaw", "HeadPitch"]
+            angles = [0.5, -0.3]
+            self.motion.setAngles(names, angles, 0.2)
+            print("[OK] Tête bougée")
+
+            time.sleep(5)
+
+            # Retour au centre
+            self.motion.setAngles(names, [0.0, 0.0], 0.2)
+            print("[OK] Tête revenue au centre")
+
+            self.tts.say("Test terminé.")
+        except Exception as e:
+            print("[ERREUR] Problème pendant l’exécution :", e)
+
+        # Fin du script
+        self.onStopped()
+
+    def onInput_onStop(self):
+        print("[Choregraphe] Arrêt demandé")
+        self.onUnload()
+        self.onStopped()
+
+    def onStopped(self):
+        pass  # sera remplacé automatiquement par Choregraphe
