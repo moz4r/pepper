@@ -1,4 +1,5 @@
 # -*- coding: utf-8 -*-
+# testé sur 2.9 uniquement ( l'idée est de faire marcher la reco vocale interne suite conflit android )
 import qi
 import time
 import sys
