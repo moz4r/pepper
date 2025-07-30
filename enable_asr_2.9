@@ -1,0 +1,27 @@
+# -*- coding: utf-8 -*-
+import qi
+import sys
+
+PEPPER_IP = "127.0.0.1"
+PEPPER_PORT = 9559
+
+def main():
+    session = qi.Session()
+    try:
+        session.connect("tcp://{}:{}".format(PEPPER_IP, PEPPER_PORT))
+    except RuntimeError:
+        print("Impossible de se connecter à NAOqi")
+        sys.exit(1)
+
+    print("[OK] Connecté à NAOqi 2.9")
+
+    dialog = session.service("ALDialog")
+
+    try:
+        dialog.stopDialog()
+        print("[OK] Service Nuance/ALDialog Android stoppé")
+    except Exception as e:
+        print("[ERREUR] Impossible d'arrêter Nuance :", e)
+
+if __name__ == "__main__":
+    main()
