@@ -16,7 +16,7 @@ sys.setdefaultencoding('utf-8')
 
 PEPPER_IP = "127.0.0.1"
 PEPPER_PORT = 9559
-API_KEY = "WOFW4lSpvhHuowFgH5ozmsDqgQEkO31B"
+API_KEY = "VOTRECLELESCOPAINS"
 
 MISTRAL_URL = "https://api.mistral.ai/v1/chat/completions"
 HEADERS = {"Authorization": "Bearer {}".format(API_KEY)}
