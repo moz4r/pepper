@@ -1,0 +1,176 @@
+# -*- coding: utf-8 -*-
+"""
+Pepper + Mistral Voxtral (UTF-8 safe + check clé API)
+- Active l'écoute sur le hotword "pepper"
+- Capture le micro de Pepper
+- Envoie l'audio à Mistral
+- Vérifie si la clé API est refusée (401) et prévient vocalement
+"""
+
+from __future__ import print_function
+import qi, sys, time, numpy as np
+import base64, requests, subprocess, threading, io, wave
+
+reload(sys)
+sys.setdefaultencoding('utf-8')
+
+PEPPER_IP = "127.0.0.1"
+PEPPER_PORT = 9559
+API_KEY = "WOFW4lSpvhHuowFgH5ozmsDqgQEkO31B"
+
+MISTRAL_URL = "https://api.mistral.ai/v1/chat/completions"
+HEADERS = {"Authorization": "Bearer {}".format(API_KEY)}
+
+# ---------------- OUTILS ----------------
+def safe_print(*args):
+    """print UTF-8 safe pour Python2"""
+    out = []
+    for arg in args:
+        try:
+            if isinstance(arg, unicode):
+                out.append(arg.encode("utf-8"))
+            else:
+                out.append(str(arg))
+        except Exception as e:
+            out.append("[UNPRINTABLE:{}]".format(e))
+    sys.stdout.write(" ".join(out) + "\n")
+    sys.stdout.flush()
+
+# ---------------- API MISTRAL ----------------
+def send_to_mistral(wav_bytes, tts):
+    """Envoie l'audio à Mistral et gère l'erreur de clé API refusée."""
+    try:
+        audio_b64 = base64.b64encode(wav_bytes)
+        payload = {
+            "model": "voxtral-mini-latest",
+            "messages": [
+                {"role": "system",
+                 "content": "Tu es Pepper. Transcris exactement ce que dit l'utilisateur en français."},
+                {"role": "user",
+                 "content": [
+                     {"type": "input_audio", "input_audio": {"data": audio_b64, "format": "wav"}}
+                 ]}
+            ]
+        }
+        r = requests.post(MISTRAL_URL, headers=HEADERS, json=payload)
+
+        # Vérifie si la clé API est refusée
+        if r.status_code == 401:
+            safe_print("[ERREUR] Clé API Mistral refusée (401 Unauthorized)")
+            tts.say("Attention. Ma clé API Mistral est refusée. Vérifie la configuration.")
+            return None
+
+        r.raise_for_status()
+        return r.json()["choices"][0]["message"]["content"]
+
+    except Exception as e:
+        safe_print("[ERREUR MISTRAL]", e)
+        tts.say("Une erreur est survenue avec le service vocal.")
+        return None
+
+# ---------------- CAPTURE AUDIO ----------------
+class AudioCapture(object):
+    def __init__(self, session, leds):
+        self.buffer = []
+        self.recording = False
+        self.leds = leds
+        self.module_name = "PepperRecorder"
+        self.session = session
+        self.audio = session.service("ALAudioDevice")
+
+        session.registerService(self.module_name, self)
+        self.audio.setClientPreferences(self.module_name, 16000, 1, 0)
+        self.audio.subscribe(self.module_name)
+
+    def processRemote(self, nb_channels, nb_samples, timestamp, buffer):
+        if self.recording:
+            data = np.frombuffer(buffer, dtype=np.int16)
+            self.buffer.append(data)
+
+    def start(self):
+        self.buffer = []
+        self.recording = True
+        self.leds.fadeRGB("FaceLeds", 0x0000FF, 0.1)
+        safe_print("[AUDIO] Capture démarrée")
+
+    def stop(self):
+        self.recording = False
+        if not self.buffer:
+            return None
+        samples = np.concatenate(self.buffer)
+        self.buffer = []
+        output = io.BytesIO()
+        wf = wave.open(output, "wb")
+        wf.setnchannels(1)
+        wf.setsampwidth(2)
+        wf.setframerate(16000)
+        wf.writeframes(samples.tobytes())
+        wf.close()
+        safe_print("[AUDIO] Segment prêt")
+        return output.getvalue()
+
+# ---------------- MAIN ----------------
+def main():
+    sys.excepthook = lambda exctype, value, tb: \
+        safe_print("[CRASH]", exctype, value)
+
+    app = qi.Application(["PepperASR", "--qi-url=tcp://{}:{}".format(PEPPER_IP, PEPPER_PORT)])
+    app.start()
+    session = app.session
+    safe_print("[OK] Connecté")
+
+    tts = session.service("ALTextToSpeech")
+    dialog = session.service("ALDialog")
+    memory = session.service("ALMemory")
+    leds = session.service("ALLeds")
+
+    subprocess.call(["amixer", "sset", "Capture", "90%"])
+    safe_print("[OK] Volume micro réglé à 90%")
+
+    try:
+        dialog.stopDialog()
+    except:
+        pass
+
+    topic_content = u"""
+    topic: ~hotword()
+    language: frf
+    u:(pepper *) $1
+    """
+    topic_name = dialog.loadTopicContent(topic_content)
+    dialog.activateTopic(topic_name)
+    dialog.subscribe("HotwordDialog")
+
+    recorder = AudioCapture(session, leds)
+
+    def handle_transcription():
+        wav_bytes = recorder.stop()
+        if wav_bytes:
+            txt = send_to_mistral(wav_bytes, tts)
+            if txt:
+                safe_print("[MISTRAL]", txt)
+                leds.fadeRGB("FaceLeds", 0x00FF00, 0.3)
+                tts.say(txt)
+            else:
+                leds.fadeRGB("FaceLeds", 0xFF0000, 0.3)  # rouge = erreur
+        else:
+            tts.say("Je n'ai rien entendu.")
+        leds.fadeRGB("FaceLeds", 0xFFFFFF, 0.3)
+
+    def on_input(value):
+        if not value:
+            return
+        safe_print("[DEBUG] Hotword détecté :", value)
+        recorder.start()
+        tts.say("Oui ?")
+        time.sleep(3)
+        threading.Thread(target=handle_transcription).start()
+
+    subscriber = memory.subscriber("Dialog/LastInput")
+    subscriber.signal.connect(on_input)
+
+    tts.say("Dis 'pepper' pour m'activer.")
+    app.run()
+
+if __name__ == "__main__":
+    main()
