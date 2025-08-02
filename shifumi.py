@@ -3,13 +3,9 @@
 shifumi_dialog.py - Pierre-Feuille-Ciseaux avec Pepper
 - Utilise ALDialog pour la reconnaissance
 - Coupe l'écoute quand Pepper parle
-- Réveille Pepper au démarrage
-- Met Pepper en mode interactif (solitary) au lieu de disabled pour éviter qu'il s'endorme
-- Active la raideur complète du corps pour vitesse maximale
-- Bras levé rapidement à mi-hauteur
-- Mouvements rapides (poignet et coude)
-- Révélation après 3 secondes
-- Gestes spécifiques selon pierre, feuille, ciseaux
+- Désactive Autonomous Life seulement après le choix pierre/feuille/ciseaux
+- Fait secouer le bras et tourner le poignet rapidement pendant environ 2 secondes avant la révélation
+- Réactive Autonomous Life à la fin du jeu
 """
 
 import qi
@@ -18,7 +14,6 @@ import time
 import random
 
 def speak(tts, dialog, phrase):
-    """Fait parler Pepper sans qu'il s'écoute."""
     try:
         dialog.unsubscribe("ShifumiGame")
     except:
@@ -26,39 +21,29 @@ def speak(tts, dialog, phrase):
     tts.say(phrase)
     dialog.subscribe("ShifumiGame")
 
-def geste_shifumi(motion, life, choix, tts):
-    # Met en mode interactif pour garder Pepper réveillé
-    try:
-        life.setState("solitary")
-        tts.post.say("Je me concentre sur le jeu.")
-    except:
-        pass
+def reset_position(motion):
+    names  = ["RShoulderPitch", "RShoulderRoll", "RElbowRoll", "RWristYaw", "RHand"]
+    angles = [1.5, 0.0, 0.5, 0.0, 0.0]
+    speeds = [1.0, 1.0, 1.0, 1.0, 1.0]
+    for n, a, s in zip(names, angles, speeds):
+        motion.angleInterpolationWithSpeed(n, a, s)
 
-    # Lever le bras rapidement
+def geste_shifumi(motion, choix):
     motion.angleInterpolationWithSpeed("RShoulderPitch", 0.2, 1.0)
     motion.angleInterpolationWithSpeed("RShoulderRoll", -0.2, 1.0)
     motion.angleInterpolationWithSpeed("RElbowRoll", 1.2, 1.0)
 
-    # Secouement rapide
-    for _ in range(4):
-        motion.angleInterpolationWithSpeed("RWristYaw", 1.0, 1.0)
-        motion.angleInterpolationWithSpeed("RElbowRoll", 1.0, 1.0)
-        motion.angleInterpolationWithSpeed("RWristYaw", -1.0, 1.0)
-        motion.angleInterpolationWithSpeed("RElbowRoll", 1.2, 1.0)
+    start_time = time.time()
+    while time.time() - start_time < 2.0:  # secoue pendant 2 secondes
+        motion.angleInterpolation(["RWristYaw"], [[1.0], [-1.0]], [[0.5], [0.5]], True)
+        motion.angleInterpolation(["RElbowRoll"], [[1.0], [1.2]], [[0.5], [0.5]], True)
 
-    # Gestes spécifiques selon le choix
     if choix == "pierre":
         motion.angleInterpolationWithSpeed("RHand", 0.0, 1.0)
     elif choix == "feuille":
         motion.angleInterpolationWithSpeed("RHand", 1.0, 1.0)
     elif choix == "ciseaux":
         motion.angleInterpolationWithSpeed("RHand", 0.5, 1.0)
-
-    # Reste en mode solitary pour qu'il ne s'endorme pas
-    try:
-        life.setState("solitary")
-    except:
-        pass
 
 def main(session):
     tts = session.service("ALTextToSpeech")
@@ -67,31 +52,22 @@ def main(session):
     memory = session.service("ALMemory")
     life = session.service("ALAutonomousLife")
 
-    # Réveille Pepper au démarrage
-    try:
-        life.setState("solitary")
-        tts.say("Je suis réveillé et prêt à jouer.")
-    except:
-        pass
-
-    # Active la raideur du corps pour vitesse max
     motion.setStiffnesses("Body", 1.0)
+    reset_position(motion)
 
     try:
         dialog.stopDialog()
     except:
         pass
 
-    topic_content = u"""
+    dialog.activateTopic(dialog.loadTopicContent(u"""
     topic: ~shifumi()
     language: frf
     u:(shifumi) shifumi
     u:(pierre) pierre
     u:(feuille) feuille
     u:(ciseaux) ciseaux
-    """
-    topic_name = dialog.loadTopicContent(topic_content)
-    dialog.activateTopic(topic_name)
+    """))
     dialog.subscribe("ShifumiGame")
 
     recognized_word = {"word": None}
@@ -106,38 +82,52 @@ def main(session):
 
     speak(tts, dialog, "Dis 'shifumi' pour commencer à jouer.")
 
-    while True:
-        while recognized_word["word"] != "shifumi":
-            time.sleep(0.1)
+    try:
+        while True:
+            while recognized_word["word"] != "shifumi":
+                time.sleep(0.1)
 
-        speak(tts, dialog, "Très bien. Choisis entre pierre, feuille ou ciseaux.")
-        recognized_word["word"] = None
+            speak(tts, dialog, "Très bien. Choisis entre pierre, feuille ou ciseaux.")
+            recognized_word["word"] = None
 
-        while recognized_word["word"] not in ["pierre", "feuille", "ciseaux"]:
-            time.sleep(0.1)
+            while recognized_word["word"] not in ["pierre", "feuille", "ciseaux"]:
+                time.sleep(0.1)
 
-        joueur = recognized_word["word"]
-        robot = random.choice(["pierre", "feuille", "ciseaux"])
+            # Une fois le choix dit, couper Autonomous Life
+            try:
+                life.stopAll()
+                life.setAutonomousAbilityEnabled("All", False)
+            except:
+                pass
 
-        # Geste suspense + choix visuel
-        geste_shifumi(motion, life, robot, tts)
+            joueur = recognized_word["word"]
+            robot = random.choice(["pierre", "feuille", "ciseaux"])
 
-        speak(tts, dialog, "J'ai choisi...")
-        #time.sleep(3)
-        speak(tts, dialog, robot)
+            geste_shifumi(motion, robot)
 
-        if joueur == robot:
-            resultat = "Égalité."
-        elif (joueur == "pierre" and robot == "ciseaux") or \
-             (joueur == "feuille" and robot == "pierre") or \
-             (joueur == "ciseaux" and robot == "feuille"):
-            resultat = "Tu as gagné !"
-        else:
-            resultat = "J'ai gagné !"
+            speak(tts, dialog, "J'ai choisi...")
+            time.sleep(0.7)
+            speak(tts, dialog, robot)
 
-        speak(tts, dialog, resultat)
-        recognized_word["word"] = None
-        speak(tts, dialog, "Dis 'shifumi' pour rejouer.")
+            if joueur == robot:
+                resultat = "Égalité."
+            elif (joueur == "pierre" and robot == "ciseaux") or \
+                 (joueur == "feuille" and robot == "pierre") or \
+                 (joueur == "ciseaux" and robot == "feuille"):
+                resultat = "Tu as gagné !"
+            else:
+                resultat = "J'ai gagné !"
+
+            speak(tts, dialog, resultat)
+            recognized_word["word"] = None
+            reset_position(motion)
+            speak(tts, dialog, "Dis 'shifumi' pour rejouer.")
+    finally:
+        try:
+            life.setAutonomousAbilityEnabled("All", True)
+            tts.say("Fin du jeu, Autonomous Life réactivé.")
+        except:
+            pass
 
 if __name__ == "__main__":
     try:
