@@ -3,6 +3,7 @@
 version Alpha 0.0.1
 
 Ce projet permet d’utiliser partiellement **Choregraphe** (jusqu’à la version 2.8.8) avec un robot sous **QiOS 2.9**, en reproduisant certaines fonctionnalités via des outils Python.
+Vous avez besoin d'un accès distant SSH ou Telnet, ou micro usb ( dans la tete )  pour lancer les commandes python
 
 ⚠️ **Statut actuel :**  
 Seules les boîtes **Animation** et **Say** sont prises en charge.
