@@ -10,18 +10,18 @@ Lecteur d'animations XAR (Choregraphe) pour Pepper/NAO sans ALBehaviorManager.
 - Extrait les courbes d'articulateurs et les boîtes Say
 - Convertit les angles en radians si nécessaire
 - Clippe automatiquement les valeurs aux limites mécaniques du robot
-- Met uniquement les moteurs raides (sans forcer wakeUp pour éviter le cycle dormir/réveil)
+- Met uniquement les moteurs raides
 - Exécute l'animation avec ALMotion.angleInterpolation
 - Supporte les boîtes Say avec gestion du lock (attente si nécessaire)
-
-Usage :
-    python my_xar_player.py /home/nao/.local/share/PackageManager/apps/demo/behavior_1/behavior.xar
+- Lecture non bloquante d'un fichier audio mp3/wav/ogg du même nom que le XAR
 """
 
 import qi
 import sys
 import xml.etree.ElementTree as ET
 import math
+import os
+import threading
 
 
 class XarPlayer:
@@ -30,8 +30,10 @@ class XarPlayer:
         self.motion = session.service("ALMotion")
         self.life = session.service("ALAutonomousLife")
         self.tts = session.service("ALTextToSpeech")
+        self.audio = session.service("ALAudioPlayer")
         self.fps = 25.0
         self.xar_path = xar_path
+        self.audio_id = None
 
     def prepare_robot(self):
         try:
@@ -45,9 +47,31 @@ class XarPlayer:
 
         try:
             self.motion.setStiffnesses("Body", 1.0)
-            print("[XAR] Moteurs rendus raides (sans wakeUp).")
+            print("[XAR] Moteurs rendus raides.")
         except Exception as e:
             print("[ERROR] Impossible d’activer les moteurs:", e)
+
+    def play_audio_if_exists(self):
+        base, _ = os.path.splitext(self.xar_path)
+        for ext in [".mp3", ".wav", ".ogg"]:
+            audio_file = base + ext
+            if os.path.exists(audio_file):
+                def launch_audio():
+                    print("[XAR] Lecture audio:", audio_file)
+                    try:
+                        self.audio_id = self.audio.playFile(audio_file, 1.0, 0.0)
+                    except Exception as e:
+                        print("[ERROR] Impossible de jouer le fichier audio:", e)
+                return threading.Thread(target=launch_audio)
+        return None
+
+    def stop_audio(self):
+        if self.audio_id is not None:
+            try:
+                self.audio.stop(self.audio_id)
+                print("[XAR] Audio arrêté.")
+            except Exception as e:
+                print("[ERROR] Impossible d'arrêter l'audio:", e)
 
     def parse_xar(self):
         try:
@@ -126,6 +150,7 @@ class XarPlayer:
 
     def run(self):
         self.prepare_robot()
+        audio_thread = self.play_audio_if_exists()
         names, angles, times = self.parse_xar()
         if not names:
             print("[XAR] Aucune courbe d'actuateur trouvée.")
@@ -133,7 +158,10 @@ class XarPlayer:
 
         print("[XAR] Exécution de l'animation avec {} articulateurs...".format(len(names)))
         try:
+            if audio_thread:
+                audio_thread.start()
             self.motion.angleInterpolation(names, angles, times, True)
+            self.stop_audio()
             print("[XAR] Animation terminée.")
         except Exception as e:
             print("[ERROR] Pendant l'exécution:", e)
