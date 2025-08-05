@@ -7,10 +7,12 @@ my_xar_player.py
 Lecteur d'animations XAR (Choregraphe) pour Pepper/NAO sans ALBehaviorManager.
 
 - Parse les fichiers .xar exportés par Choregraphe
-- Extrait les courbes d'articulateurs
+- Extrait les courbes d'articulateurs et les boîtes Say
 - Convertit les angles en radians si nécessaire
 - Clippe automatiquement les valeurs aux limites mécaniques du robot
+- Met uniquement les moteurs raides (sans forcer wakeUp pour éviter le cycle dormir/réveil)
 - Exécute l'animation avec ALMotion.angleInterpolation
+- Supporte les boîtes Say avec gestion du lock (attente si nécessaire)
 
 Usage :
     python my_xar_player.py /home/nao/.local/share/PackageManager/apps/demo/behavior_1/behavior.xar
@@ -24,20 +26,30 @@ import math
 
 class XarPlayer:
     def __init__(self, session, xar_path):
-        """Initialise le lecteur avec une session Qi et le chemin du XAR."""
         self.session = session
         self.motion = session.service("ALMotion")
-        self.fps = 25.0   # Framerate par défaut des timelines Choregraphe
+        self.life = session.service("ALAutonomousLife")
+        self.tts = session.service("ALTextToSpeech")
+        self.fps = 25.0
         self.xar_path = xar_path
 
+    def prepare_robot(self):
+        try:
+            current_state = self.life.getState()
+            print("[XAR] Autonomous Life actuel:", current_state)
+            if current_state != "disabled":
+                self.life.setState("disabled")
+                print("[XAR] Autonomous Life désactivé.")
+        except Exception as e:
+            print("[WARN] Impossible de gérer Autonomous Life:", e)
+
+        try:
+            self.motion.setStiffnesses("Body", 1.0)
+            print("[XAR] Moteurs rendus raides (sans wakeUp).")
+        except Exception as e:
+            print("[ERROR] Impossible d’activer les moteurs:", e)
+
     def parse_xar(self):
-        """
-        Parse le fichier XAR pour extraire les timelines d'angles.
-        Retourne :
-            names      -> liste des noms d'articulateurs
-            angleLists -> liste des valeurs d'angles (en radians, clipées)
-            timeLists  -> liste des temps correspondants
-        """
         try:
             tree = ET.parse(self.xar_path)
             root = tree.getroot()
@@ -48,13 +60,31 @@ class XarPlayer:
         names, angleLists, timeLists = [], [], []
         ns = {'ns': root.tag.split('}')[0].strip('{')} if '}' in root.tag else {}
 
-        # Recherche toutes les courbes d'articulateurs
-        curves = root.findall(".//ns:ActuatorCurve", ns) if ns else root.findall(".//ActuatorCurve")
+        # Gestion des boîtes Say
+        boxes = root.findall(".//ns:Box", ns) if ns else root.findall(".//Box")
+        for box in boxes:
+            if box.attrib.get("name") == "Say":
+                params = {p.attrib['name']: p.attrib.get('value', '') for p in box.findall("ns:Parameter", ns)}
+                text = params.get("Text", "")
+                speed = params.get("Speed (%)", "100")
+                shaping = params.get("Voice shaping (%)", "100")
+                sentence = "\\RSPD={}\\ \\VCT={}\\ {} \\RST\\".format(speed, shaping, text)
+                use_blocking = any(r.attrib.get('type') == 'Lock' for r in box.findall("ns:Resource", ns))
+                try:
+                    if use_blocking:
+                        print("[XAR] TTS (bloquant):", text)
+                        self.tts.say(sentence)
+                    else:
+                        print("[XAR] TTS (non bloquant):", text)
+                        self.tts.post.say(sentence)
+                except Exception as e:
+                    print("[ERROR] Impossible d'exécuter TTS:", e)
 
+        # Gestion des actuateurs
+        curves = root.findall(".//ns:ActuatorCurve", ns) if ns else root.findall(".//ActuatorCurve")
         for curve in curves:
             actuator = curve.attrib.get("actuator")
-            unit = curve.attrib.get("unit", "0")  # 0 = degrés, 1 = radians
-
+            unit = curve.attrib.get("unit", "0")
             if not actuator:
                 continue
 
@@ -62,15 +92,12 @@ class XarPlayer:
             if not keys:
                 continue
 
-            # Extraction des frames -> temps, et des angles
             times = [int(k.attrib["frame"]) / self.fps for k in keys]
             angles = [float(k.attrib["value"]) for k in keys]
 
-            # Conversion en radians si nécessaire
-            if unit == "0":  
+            if unit == "0":
                 angles = [math.radians(a) for a in angles]
 
-            # Normalisation des temps (suppression des doublons)
             norm_times, norm_angles = [], []
             last_t = -1.0
             for t, a in zip(times, angles):
@@ -79,13 +106,11 @@ class XarPlayer:
                     norm_angles.append(a)
                     last_t = t
 
-            # Récupération des limites articulaires et clipping
             try:
                 limits = self.motion.getLimits(actuator)
                 min_angle, max_angle = limits[0][0], limits[0][1]
                 safe_angles = [max(min(a, max_angle), min_angle) for a in norm_angles]
             except Exception:
-                # Si on ne peut pas obtenir les limites (rare), on ne clippe pas
                 safe_angles = norm_angles
 
             if norm_times:
@@ -93,7 +118,6 @@ class XarPlayer:
                 angleLists.append(safe_angles)
                 timeLists.append(norm_times)
 
-            # Debug print
             print("[XAR] Actuator: {}".format(actuator))
             print("   Times : {} ... total {}".format(norm_times[:5], len(norm_times)))
             print("   Angles: {} ... total {}".format(safe_angles[:5], len(safe_angles)))
@@ -101,7 +125,7 @@ class XarPlayer:
         return names, angleLists, timeLists
 
     def run(self):
-        """Exécute l'animation sur le robot."""
+        self.prepare_robot()
         names, angles, times = self.parse_xar()
         if not names:
             print("[XAR] Aucune courbe d'actuateur trouvée.")
@@ -122,12 +146,10 @@ def main():
 
     xar_path = sys.argv[1]
 
-    # Démarrage d'une application Qi pour se connecter à NAOqi
     app = qi.Application(["XarPlayer", "--qi-url=tcp://127.0.0.1:9559"])
     app.start()
     session = app.session
 
-    # Instanciation du lecteur et exécution
     player = XarPlayer(session, xar_path)
     player.run()
 
