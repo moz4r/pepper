@@ -1,5 +1,7 @@
 # Émulateur Choregraphe pour QiOS 2.9
 
+version Alpha 0.0.1
+
 Ce projet permet d’utiliser partiellement **Choregraphe** (jusqu’à la version 2.8.8) avec un robot sous **QiOS 2.9**, en reproduisant certaines fonctionnalités via des outils Python.
 
 ⚠️ **Statut actuel :**  
