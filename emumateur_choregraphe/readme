@@ -1,58 +1,51 @@
-Émulateur Choregraphe pour QiOS 2.9
-Ce projet permet d’utiliser partiellement Choregraphe (jusqu’à la version 2.8.8) avec un robot sous QiOS 2.9, en reproduisant certaines fonctionnalités via des outils Python.
+# Émulateur Choregraphe pour QiOS 2.9
 
-⚠️ Statut actuel :
-Seules les boîtes Animation et Say sont prises en charge.
+Ce projet permet d’utiliser partiellement **Choregraphe** (jusqu’à la version 2.8.8) avec un robot sous **QiOS 2.9**, en reproduisant certaines fonctionnalités via des outils Python.
 
-Fonctionnement
+⚠️ **Statut actuel :**  
+Seules les boîtes **Animation** et **Say** sont prises en charge.
+
+---
+
+## Fonctionnement
+
 Le système propose deux modules principaux pour exécuter des animations et un troisième en PoC.
 
-1. qianim_player.py
-Exécute localement des animations au format .qianim.
+### 1. `qianim_player.py`
+- Exécute localement des animations au format **`.qianim`**.  
+- Ces animations ont été conçues à l’origine dans **Android Studio**.
 
-Ces animations ont été conçues à l’origine dans Android Studio.
+### 2. `xar_player.py`
+- Permet de lire des animations créées avec Choregraphe au format **`.xar`** (testé avec Choregraphe 2.8.8).  
+- Prend aussi en charge les fichiers **`.crg`** pour la gestion de l’**audio**.
 
-2. xar_player.py
-Permet de lire des animations créées avec Choregraphe au format .xar (testé avec Choregraphe 2.8.8).
+### 3. `choregraphe_server.py` *(PoC)*
+- Prototype de **wrapper Python** interceptant les requêtes de Choregraphe.  
+- Pour l’instant, il **fait seulement croire à Choregraphe que le robot est connecté**, sans exécuter de vraies commandes.  
+- Sert de base pour une future compatibilité avec QiOS 2.9 et ses nouvelles méthodes.  
+- **Connexion par défaut sur le port 9999.**
 
-Prend aussi en charge les fichiers .crg pour la gestion de l’audio.
+---
 
-3. choregraphe_server.py (PoC)
-Prototype de wrapper Python interceptant les requêtes de Choregraphe.
+## Limitations actuelles
 
-Pour l’instant, il fait seulement croire à Choregraphe que le robot est connecté, sans exécuter de vraies commandes.
+- ✅ Lecture d’animations (`.qianim`, `.xar`, `.crg`)
+- ✅ Support de la boîte **Say**
+- ❌ Pas de support des autres boîtes Choregraphe
+- ❌ Pas de gestion avancée des événements ou des comportements complexes
+- ❌ Le serveur Choregraphe est uniquement un **PoC**
 
-Sert de base pour une future compatibilité avec QiOS 2.9 et ses nouvelles méthodes.
+---
 
-Limitations actuelles
-✅ Lecture d’animations (.qianim, .xar, .crg).
+## Installation & Utilisation
 
-✅ Support de la boîte Say.
-
-❌ Pas de support des autres boîtes Choregraphe.
-
-❌ Pas de gestion avancée des événements ou des comportements complexes.
-
-❌ Le serveur Choregraphe est uniquement un PoC.
-
-Installation & Utilisation
-
-
+```bash
 # Exécuter une animation qianim
 python qianim_player.py chemin/vers/animation.qianim
 
 # Exécuter une animation xar ou crg
-python xar_player.py chemin/vers/animation.xar/crg
+python xar_player.py chemin/vers/animation.xar
+python xar_player.py chemin/vers/animation.crg
 
 # (optionnel) Lancer le serveur PoC
-python choregraphe_server.py ( connecer sur 9999 )
-
-Feuille de route
- Améliorer la compatibilité avec d’autres boîtes Choregraphe.
-
- Conversion complète des requêtes Choregraphe en méthodes QiOS 2.9.
-
- Gestion avancée de l’audio, des dialogues et des événements.
-
- Intégration avec NAOqi Python SDK 2.9 (si disponible).
-
+python choregraphe_server.py  # connexion sur port 9999
