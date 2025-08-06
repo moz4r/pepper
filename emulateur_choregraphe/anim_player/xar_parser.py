@@ -4,8 +4,6 @@
 import xml.etree.ElementTree as ET
 import math
 
-FPS = 25.0
-
 def parse_xar(xar_path, tts, motion):
     try:
         tree = ET.parse(xar_path)
@@ -17,6 +15,22 @@ def parse_xar(xar_path, tts, motion):
     names, angleLists, timeLists = [], [], []
     ns = {'ns': root.tag.split('}')[0].strip('{')} if '}' in root.tag else {}
 
+    # Récupération du FPS depuis la balise <Timeline>
+    fps_list = []
+    timelines = root.findall(".//ns:Timeline", ns) if ns else root.findall(".//Timeline")
+    for t in timelines:
+        raw_fps = t.attrib.get("fps")
+        if raw_fps:
+            try:
+                f = float(raw_fps)
+                if f > 0:
+                    fps_list.append(f)
+            except ValueError:
+                pass
+    fps = fps_list[0] if fps_list else 25.0
+    print("[DEBUG] FPS utilisé :", fps)
+
+    # TTS depuis les boîtes "Say"
     boxes = root.findall(".//ns:Box", ns) if ns else root.findall(".//Box")
     for box in boxes:
         if box.attrib.get("name") == "Say":
@@ -36,7 +50,19 @@ def parse_xar(xar_path, tts, motion):
             except Exception as e:
                 print("[ERROR] Impossible d'exécuter TTS:", e)
 
+    # Actuator curves
     curves = root.findall(".//ns:ActuatorCurve", ns) if ns else root.findall(".//ActuatorCurve")
+    print("[DEBUG] Articulateurs trouvés dans le XAR :")
+    found_actuators = set()
+
+    for curve in curves:
+        actuator = curve.attrib.get("actuator")
+        if actuator:
+            found_actuators.add(actuator)
+
+    for a in sorted(found_actuators):
+        print(" - {}".format(a))
+
     for curve in curves:
         actuator = curve.attrib.get("actuator")
         unit = curve.attrib.get("unit", "0")
@@ -47,7 +73,7 @@ def parse_xar(xar_path, tts, motion):
         if not keys:
             continue
 
-        times = [int(k.attrib["frame"]) / FPS for k in keys]
+        times = [int(k.attrib["frame"]) / fps for k in keys]
         angles = [float(k.attrib["value"]) for k in keys]
 
         if unit == "0":
