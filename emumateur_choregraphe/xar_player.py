@@ -4,16 +4,10 @@
 """
 my_xar_player.py
 ----------------
-Lecteur d'animations XAR (Choregraphe) pour Pepper/NAO sans ALBehaviorManager.
-
-- Parse les fichiers .xar exportés par Choregraphe
-- Extrait les courbes d'articulateurs et les boîtes Say
-- Convertit les angles en radians si nécessaire
-- Clippe automatiquement les valeurs aux limites mécaniques du robot
-- Met uniquement les moteurs raides
-- Exécute l'animation avec ALMotion.angleInterpolation
-- Supporte les boîtes Say avec gestion du lock (attente si nécessaire)
-- Lecture non bloquante d'un fichier audio mp3/wav/ogg du même nom que le XAR
+Lecteur d'animations XAR pour Pepper/NAO.
+- Laisse le random ON pendant le TTS
+- Coupe le random juste avant l'animation
+- Le réactive après
 """
 
 import qi
@@ -22,6 +16,7 @@ import xml.etree.ElementTree as ET
 import math
 import os
 import threading
+import time
 
 
 class XarPlayer:
@@ -35,21 +30,52 @@ class XarPlayer:
         self.xar_path = xar_path
         self.audio_id = None
 
-    def prepare_robot(self):
+    def ensure_awake(self):
+        """Réveille Pepper et assure un état interactif"""
         try:
-            current_state = self.life.getState()
-            print("[XAR] Autonomous Life actuel:", current_state)
-            if current_state != "disabled":
-                self.life.setState("disabled")
-                print("[XAR] Autonomous Life désactivé.")
-        except Exception as e:
-            print("[WARN] Impossible de gérer Autonomous Life:", e)
-
-        try:
+            if not self.motion.robotIsWakeUp():
+                print("[INFO] Robot endormi, réveil en cours...")
+                self.motion.wakeUp()
+                time.sleep(1)
             self.motion.setStiffnesses("Body", 1.0)
-            print("[XAR] Moteurs rendus raides.")
+            if self.life.getState() != "interactive":
+                self.life.setState("interactive")
+                print("[OK] AutonomousLife -> interactive")
+            print("[OK] Moteurs actifs et robot éveillé")
         except Exception as e:
-            print("[ERROR] Impossible d’activer les moteurs:", e)
+            print("[ERREUR] ensure_awake :", e)
+
+    def disable_random_modules(self):
+        """Coupe les mouvements aléatoires avant l'animation"""
+        modules = [
+            "ALSpeakingMovement",
+            "ALListeningMovement",
+            "ALBackgroundMovement",
+            "BasicAwareness",
+        ]
+        for name in modules:
+            try:
+                srv = self.session.service(name)
+                srv.setEnabled(False)
+                print("[OK] {} désactivé pour l’animation".format(name))
+            except Exception as e:
+                print("[--] Impossible de désactiver {} : {}".format(name, e))
+
+    def enable_random_modules(self):
+        """Réactive les mouvements aléatoires après l'animation"""
+        modules = [
+            "ALSpeakingMovement",
+            "ALListeningMovement",
+            "ALBackgroundMovement",
+            "BasicAwareness",
+        ]
+        for name in modules:
+            try:
+                srv = self.session.service(name)
+                srv.setEnabled(True)
+                print("[OK] {} réactivé".format(name))
+            except Exception as e:
+                print("[--] Impossible d'activer {} : {}".format(name, e))
 
     def play_audio_if_exists(self):
         base, _ = os.path.splitext(self.xar_path)
@@ -74,6 +100,7 @@ class XarPlayer:
                 print("[ERROR] Impossible d'arrêter l'audio:", e)
 
     def parse_xar(self):
+        """Parse le XAR et exécute les boîtes Say"""
         try:
             tree = ET.parse(self.xar_path)
             root = tree.getroot()
@@ -84,7 +111,7 @@ class XarPlayer:
         names, angleLists, timeLists = [], [], []
         ns = {'ns': root.tag.split('}')[0].strip('{')} if '}' in root.tag else {}
 
-        # Gestion des boîtes Say
+        # Gestion des boîtes Say (random encore ON ici)
         boxes = root.findall(".//ns:Box", ns) if ns else root.findall(".//Box")
         for box in boxes:
             if box.attrib.get("name") == "Say":
@@ -142,18 +169,24 @@ class XarPlayer:
                 angleLists.append(safe_angles)
                 timeLists.append(norm_times)
 
-            print("[XAR] Actuator: {}".format(actuator))
-            print("   Times : {} ... total {}".format(norm_times[:5], len(norm_times)))
-            print("   Angles: {} ... total {}".format(safe_angles[:5], len(safe_angles)))
+            print("[XAR] Actuator:", actuator)
+            print("   Times :", norm_times[:5], "... total", len(norm_times))
+            print("   Angles:", safe_angles[:5], "... total", len(safe_angles))
 
         return names, angleLists, timeLists
 
     def run(self):
-        self.prepare_robot()
+        self.ensure_awake()
+
         audio_thread = self.play_audio_if_exists()
         names, angles, times = self.parse_xar()
+
+        # Désactivation random seulement maintenant
+        self.disable_random_modules()
+
         if not names:
-            print("[XAR] Aucune courbe d'actuateur trouvée.")
+            print("[XAR] Aucune courbe trouvée.")
+            self.enable_random_modules()
             return
 
         print("[XAR] Exécution de l'animation avec {} articulateurs...".format(len(names)))
@@ -165,6 +198,8 @@ class XarPlayer:
             print("[XAR] Animation terminée.")
         except Exception as e:
             print("[ERROR] Pendant l'exécution:", e)
+
+        self.enable_random_modules()
 
 
 def main():
