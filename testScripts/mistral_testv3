@@ -1,0 +1,239 @@
+# -*- coding: utf-8 -*-
+"""
+Pepper + Mistral Voxtral (UTF-8 safe + check clé API)
+------------------------------------------------------
+Fonctionnalités :
+- Détection du hotword "pepper" via ALDialog
+- Capture de l'audio du micro Pepper avec ALAudioDevice
+- Encodage direct en mémoire au format WAV
+- Envoi du flux audio à Mistral (modèle voxtral-mini-latest)
+- Vérification de la clé API (si refusée → Pepper le dit)
+- Retour vocal + LEDs de feedback
+- Compatible Python 2.7 avec encodage UTF-8
+"""
+
+from __future__ import print_function   # Rend print() identique à Python3
+import qi                               # Librairie NAOqi pour Pepper
+import sys, time, numpy as np
+import base64, requests, subprocess, threading, io, wave
+
+# --- Hack pour Python 2.7 ---
+# recharge sys et définit UTF-8 comme encodage par défaut
+reload(sys)
+sys.setdefaultencoding('utf-8')
+
+# ---------------- CONFIGURATION ----------------
+PEPPER_IP = "127.0.0.1"                 # IP de Pepper (ici localhost car script lancé sur le robot)
+PEPPER_PORT = 9559                      # Port standard NAOqi
+API_KEY = "TA_CLE_API_MISTRAL"          # ⚡ À remplacer par ta vraie clé Mistral
+
+# Endpoint de l’API Mistral
+MISTRAL_URL = "https://api.mistral.ai/v1/chat/completions"
+# Entêtes HTTP avec authentification
+HEADERS = {"Authorization": "Bearer {}".format(API_KEY)}
+
+# ---------------- OUTIL D’AFFICHAGE ----------------
+def safe_print(*args):
+    """
+    Affiche du texte en UTF-8 (évite les plantages avec les accents en Python 2).
+    """
+    out = []
+    for arg in args:
+        try:
+            if isinstance(arg, unicode):  # si c'est du Unicode
+                out.append(arg.encode("utf-8"))
+            else:
+                out.append(str(arg))      # sinon conversion en str classique
+        except Exception as e:
+            out.append("[UNPRINTABLE:{}]".format(e))
+    sys.stdout.write(" ".join(out) + "\n")
+    sys.stdout.flush()
+
+# ---------------- ENVOI À MISTRAL ----------------
+def send_to_mistral(wav_bytes, tts):
+    """
+    Envoie le flux audio encodé à Mistral et renvoie le texte transcrit.
+    - wav_bytes : flux audio WAV en mémoire
+    - tts : service ALTextToSpeech pour réponses vocales en cas d'erreur
+    """
+    try:
+        # Encodage Base64 du flux audio
+        audio_b64 = base64.b64encode(wav_bytes)
+
+        # Construction du JSON attendu par l’API Mistral
+        payload = {
+            "model": "voxtral-mini-latest",   # Modèle optimisé pour l’audio
+            "messages": [
+                {"role": "system",
+                 "content": "Tu es Pepper. Transcris exactement ce que dit l'utilisateur en français."},
+                {"role": "user",
+                 "content": [
+                     {"type": "input_audio", "input_audio": {"data": audio_b64, "format": "wav"}}
+                 ]}
+            ]
+        }
+
+        # Envoi au serveur Mistral
+        r = requests.post(MISTRAL_URL, headers=HEADERS, json=payload)
+
+        # Vérification si la clé API est refusée
+        if r.status_code == 401:
+            safe_print("[ERREUR] Clé API Mistral refusée (401 Unauthorized)")
+            tts.say("Attention. Ma clé API Mistral est refusée. Vérifie la configuration.")
+            return None
+
+        # Déclenche une exception pour tout autre code d’erreur HTTP
+        r.raise_for_status()
+
+        # Retourne le texte de la réponse Mistral
+        return r.json()["choices"][0]["message"]["content"]
+
+    except Exception as e:
+        # Gestion générique des erreurs (réseau, format, serveur HS…)
+        safe_print("[ERREUR MISTRAL]", e)
+        tts.say("Une erreur est survenue avec le service vocal.")
+        return None
+
+# ---------------- CAPTURE AUDIO ----------------
+class AudioCapture(object):
+    """
+    Service Python branché à ALAudioDevice pour capturer le micro Pepper.
+    """
+    def __init__(self, session, leds):
+        self.buffer = []              # Tampon pour stocker les échantillons
+        self.recording = False        # Flag d'état
+        self.leds = leds              # Service LEDs pour feedback
+        self.module_name = "PepperRecorder"
+        self.session = session
+        self.audio = session.service("ALAudioDevice")
+
+        # Déclare ce module comme un service NAOqi
+        session.registerService(self.module_name, self)
+
+        # Préférences audio :
+        # - 16000 Hz
+        # - 1 canal (mono)
+        # - aucun décalage
+        self.audio.setClientPreferences(self.module_name, 16000, 1, 0)
+
+        # Abonnement effectif au micro
+        self.audio.subscribe(self.module_name)
+
+    def processRemote(self, nb_channels, nb_samples, timestamp, buffer):
+        """
+        Callback automatique NAOqi qui reçoit les chunks audio.
+        - nb_channels : nombre de canaux (ici 1)
+        - nb_samples : taille du chunk
+        - buffer : données brutes
+        """
+        if self.recording:
+            data = np.frombuffer(buffer, dtype=np.int16)
+            self.buffer.append(data)
+
+    def start(self):
+        """Démarre l’enregistrement audio"""
+        self.buffer = []
+        self.recording = True
+        self.leds.fadeRGB("FaceLeds", 0x0000FF, 0.1)   # Bleu = écoute
+        safe_print("[AUDIO] Capture démarrée")
+
+    def stop(self):
+        """Arrête l’enregistrement et retourne le flux WAV"""
+        self.recording = False
+        if not self.buffer:
+            return None
+
+        # Concatène les données reçues
+        samples = np.concatenate(self.buffer)
+        self.buffer = []
+
+        # Écrit les données dans un flux mémoire au format WAV
+        output = io.BytesIO()
+        wf = wave.open(output, "wb")
+        wf.setnchannels(1)           # Mono
+        wf.setsampwidth(2)           # 16 bits
+        wf.setframerate(16000)       # 16kHz
+        wf.writeframes(samples.tobytes())
+        wf.close()
+
+        safe_print("[AUDIO] Segment prêt")
+        return output.getvalue()
+
+# ---------------- MAIN ----------------
+def main():
+    # Gestion globale des crashs Python
+    sys.excepthook = lambda exctype, value, tb: \
+        safe_print("[CRASH]", exctype, value)
+
+    # Connexion à NAOqi
+    app = qi.Application(["PepperASR", "--qi-url=tcp://{}:{}".format(PEPPER_IP, PEPPER_PORT)])
+    app.start()
+    session = app.session
+    safe_print("[OK] Connecté")
+
+    # Récupération des services NAOqi utiles
+    tts = session.service("ALTextToSpeech")   # Parole
+    dialog = session.service("ALDialog")      # Reconnaissance hotword
+    memory = session.service("ALMemory")      # Accès aux événements mémoire
+    leds = session.service("ALLeds")          # LEDs faciales
+
+    # Monte le gain micro via ALSA (90 %)
+    subprocess.call(["amixer", "sset", "Capture", "90%"])
+    safe_print("[OK] Volume micro réglé à 90%")
+
+    # Coupe Nuance/Dialog Android pour libérer le moteur ASR
+    try:
+        dialog.stopDialog()
+    except:
+        pass
+
+    # Création d’un topic minimal pour activer sur le mot "pepper"
+    topic_content = u"""
+    topic: ~hotword()
+    language: frf
+    u:(pepper *) $1
+    """
+    topic_name = dialog.loadTopicContent(topic_content)
+    dialog.activateTopic(topic_name)
+    dialog.subscribe("HotwordDialog")
+
+    # Prépare la capture micro
+    recorder = AudioCapture(session, leds)
+
+    # Fonction qui envoie le flux audio à Mistral et lit la réponse
+    def handle_transcription():
+        wav_bytes = recorder.stop()
+        if wav_bytes:
+            txt = send_to_mistral(wav_bytes, tts)
+            if txt:
+                safe_print("[MISTRAL]", txt)
+                leds.fadeRGB("FaceLeds", 0x00FF00, 0.3)  # Vert = parole
+                tts.say(txt)
+            else:
+                leds.fadeRGB("FaceLeds", 0xFF0000, 0.3)  # Rouge = erreur
+        else:
+            tts.say("Je n'ai rien entendu.")
+        leds.fadeRGB("FaceLeds", 0xFFFFFF, 0.3)          # Blanc = repos
+
+    # Callback quand le hotword est détecté
+    def on_input(value):
+        if not value:
+            return
+        safe_print("[DEBUG] Hotword détecté :", value)
+        recorder.start()
+        tts.say("Oui ?")
+        # Pour l’instant : écoute pendant 3 secondes fixes
+        time.sleep(3)
+        threading.Thread(target=handle_transcription).start()
+
+    # Abonnement à l’événement mémoire de l’ASR
+    subscriber = memory.subscriber("Dialog/LastInput")
+    subscriber.signal.connect(on_input)
+
+    # Message d’accueil
+    tts.say("Dis 'pepper' pour m'activer.")
+    app.run()
+
+# ---------------- LANCEMENT ----------------
+if __name__ == "__main__":
+    main()
