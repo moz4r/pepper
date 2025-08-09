@@ -5,6 +5,7 @@ from services import get_robot_services
 from random_control import disable_random_modules, enable_random_modules
 from audio_control import play_audio_if_exists, stop_audio
 from xar_parser import parse_xar
+from pmt_player import PMTTrajectoryPlayer
 
 class XarPlayer:
     def __init__(self, session, xar_path, audio_override=None):
@@ -13,6 +14,7 @@ class XarPlayer:
         self.xar_path = xar_path
         self.audio_override = audio_override
         self.audio_id = None
+        self.pmt_player = PMTTrajectoryPlayer(session)
 
     def ensure_awake(self):
         try:
@@ -29,15 +31,8 @@ class XarPlayer:
 
     def run(self):
         self.ensure_awake()
-
-        # Lancer audio (capture ID si dispo)
-        audio_thread = play_audio_if_exists(
-            self.audio,
-            self.xar_path,
-            override=self.audio_override,
-            store_id_callback=lambda _id: setattr(self, "audio_id", _id)
-        )
-
+        # Thread audio: on passe un override si trouvé dans le PML
+        audio_thread = play_audio_if_exists(self.audio, self.xar_path, override=self.audio_override)
         names, angles, times = parse_xar(self.xar_path, self.tts, self.motion)
 
         # Sécurité: aucun doublon d'articulateur
@@ -54,6 +49,9 @@ class XarPlayer:
 
         disable_random_modules(self.session)
 
+        # Lancer la trajectoire PMT si présente (en parallèle)
+        self.pmt_player.run_if_present(self.xar_path)
+
         if not names:
             print("[XAR] Aucune courbe sélectionnée.")
             enable_random_modules(self.session)
@@ -62,12 +60,8 @@ class XarPlayer:
         try:
             if audio_thread:
                 audio_thread.start()
-
             self.motion.angleInterpolation(names, angles, times, True)
-
-            # Stop audio
             stop_audio(self.audio, self.audio_id)
-
             print("[XAR] Animation terminée.")
         except Exception as e:
             print("[ERROR] Pendant l'exécution:", e)
