@@ -35,8 +35,23 @@ def geste_shifumi(motion, choix):
 
     start_time = time.time()
     while time.time() - start_time < 2.0:  # secoue pendant 2 secondes
-        motion.angleInterpolation(["RWristYaw"], [[1.0], [-1.0]], [[0.5], [0.5]], True)
-        motion.angleInterpolation(["RElbowRoll"], [[1.0], [1.2]], [[0.5], [0.5]], True)
+        # angleInterpolation attend une liste d'angles et une liste de temps
+        # strictement croissante pour chaque articulation. L'implémentation
+        # précédente envoyait deux listes séparées pour les angles et des
+        # temps identiques (0.5, 0.5) ce qui provoquait une erreur. On fournit
+        # désormais des séquences valides de longueur 2.
+        motion.angleInterpolation(
+            ["RWristYaw"],
+            [[1.0, -1.0]],
+            [[0.5, 1.0]],
+            True,
+        )
+        motion.angleInterpolation(
+            ["RElbowRoll"],
+            [[1.0, 1.2]],
+            [[0.5, 1.0]],
+            True,
+        )
 
     if choix == "pierre":
         motion.angleInterpolationWithSpeed("RHand", 0.0, 1.0)
