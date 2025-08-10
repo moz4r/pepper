@@ -6,77 +6,122 @@ import os
 import glob
 import xml.etree.ElementTree as ET
 import qi
+
 from xar_player import XarPlayer
+from qianim_player import QianimPlayer
 
-def resolve_input_path(arg_path):
-    """
-    Retourne (xar_path, audio_override or None).
-    - Si arg_path est un .xar -> (arg_path, None)
-    - Si arg_path est un dossier -> parse *.pml pour trouver le xar et un audio
-    """
-    arg_path = os.path.abspath(arg_path)
-    if os.path.isfile(arg_path) and arg_path.lower().endswith(".xar"):
-        return arg_path, None
+AUDIO_EXT = (".wav", ".mp3", ".ogg")
 
+def _first_existing(*cands):
+    for p in cands:
+        if p and os.path.exists(p):
+            return p
+    return None
+
+def _abspath(path):
+    # robust absolute path
+    return os.path.realpath(os.path.expanduser(path))
+
+def resolve_input(arg_path):
+    """
+    Retourne (mode, path, audio_override). TOLÉRANT :
+      - accepte fichier .qianim/.xar même si os.path.exists hésite (on laisse le player ouvrir le fichier)
+      - si dossier : .qianim prioritaire, sinon .pml -> .xar
+    """
+    if not arg_path:
+        raise RuntimeError("Aucun argument fourni.")
+    arg_path = _abspath(arg_path)
+
+    # Dossier
     if os.path.isdir(arg_path):
-        # Chercher un .pml dans ce dossier (prend le premier trouvé)
+        qians = sorted(glob.glob(os.path.join(arg_path, "*.qianim")))
+        if qians:
+            return ("qianim", _abspath(qians[0]), None)
+
         pmls = sorted(glob.glob(os.path.join(arg_path, "*.pml")))
         if not pmls:
-            raise RuntimeError("Aucun fichier .pml trouvé dans: {}".format(arg_path))
+            raise RuntimeError("Aucun .qianim ni .pml trouvé dans: %s" % arg_path)
         pml = pmls[0]
         try:
             tree = ET.parse(pml)
             root = tree.getroot()
+            xar_file = root.attrib.get("xar")
+            if not xar_file:
+                beh = root.find(".//Behavior")
+                if beh is not None:
+                    xar_file = beh.attrib.get("xar")
+            if not xar_file:
+                xars = sorted(glob.glob(os.path.join(arg_path, "*.xar")))
+                if not xars:
+                    raise RuntimeError("Aucun .xar référencé dans %s" % pml)
+                xar_file = xars[0]
+            if not os.path.isabs(xar_file):
+                xar_file = os.path.join(arg_path, xar_file)
+            # audio heuristique
+            audio = None
+            for ext in AUDIO_EXT:
+                lst = sorted(glob.glob(os.path.join(arg_path, "*" + ext)))
+                if lst:
+                    audio = _abspath(lst[0]); break
+            return ("xar", _abspath(xar_file), audio)
         except Exception as e:
-            raise RuntimeError("Impossible de parser le .pml '{}': {}".format(pml, e))
+            raise RuntimeError("Erreur PML %s : %s" % (pml, e))
 
-        # BehaviorDescription -> @src (répertoire), @xar (fichier)
-        beh = root.find(".//BehaviorDescriptions/BehaviorDescription")
-        if beh is None:
-            raise RuntimeError("Pas de BehaviorDescription dans: {}".format(pml))
+    # Fichier (tolérant)
+    low = arg_path.lower()
+    if low.endswith(".qianim"):
+        return ("qianim", arg_path, None)
+    if low.endswith(".xar"):
+        # tenter de trouver un audio adjacent
+        folder = os.path.dirname(arg_path)
+        base = os.path.splitext(os.path.basename(arg_path))[0]
+        audio = None
+        for ext in AUDIO_EXT:
+            cand = _first_existing(os.path.join(folder, base + ext))
+            if cand:
+                audio = cand; break
+        return ("xar", arg_path, audio)
 
-        src_dir = beh.attrib.get("src", ".")
-        xar_file = beh.attrib.get("xar")
-        if not xar_file:
-            raise RuntimeError("Attribut 'xar' manquant dans BehaviorDescription de: {}".format(pml))
+    # Si c'est un fichier sans extension explicite, essaye .qianim prioritaire
+    if os.path.exists(arg_path):
+        q = arg_path + ".qianim"
+        x = arg_path + ".xar"
+        if os.path.exists(q):
+            return ("qianim", q, None)
+        if os.path.exists(x):
+            return ("xar", x, None)
 
-        xar_path = os.path.join(arg_path, src_dir, xar_file)
-        if not os.path.exists(xar_path):
-            raise RuntimeError("Fichier XAR introuvable: {}".format(xar_path))
-
-        # Optionnel: chercher un audio dans <Resources>
-        audio_override = None
-        resources = root.find(".//Resources")
-        if resources is not None:
-            for f in resources.findall("File"):
-                src = f.attrib.get("src", "")
-                if src.lower().endswith((".ogg", ".mp3", ".wav")):
-                    cand = os.path.join(arg_path, src)
-                    if os.path.exists(cand):
-                        audio_override = cand
-                        break
-
-        return xar_path, audio_override
-
-    raise RuntimeError("Chemin invalide: {}".format(arg_path))
+    raise RuntimeError("Chemin invalide ou format non supporté: %s" % arg_path)
 
 def main():
     if len(sys.argv) < 2:
-        print("Usage: python main.py path/to/behavior.xar OR path/to/folder_with_pml")
+        print("Usage: python animation_player.py <fichier .qianim|.xar | dossier>")
         sys.exit(1)
-
     arg = sys.argv[1]
+
     try:
-        xar_path, audio_override = resolve_input_path(arg)
+        mode, path, audio_override = resolve_input(arg)
     except Exception as e:
         print("[ERROR]", e)
+        # Aide au debug
+        try:
+            import os
+            print("[DEBUG] pwd:", os.getcwd())
+            print("[DEBUG] exists:", os.path.exists(_abspath(arg)))
+            print("[DEBUG] isfile:", os.path.isfile(_abspath(arg)))
+        except Exception:
+            pass
         sys.exit(2)
 
-    app = qi.Application(["XarPlayer", "--qi-url=tcp://127.0.0.1:9559"])
+    app = qi.Application(["AnimPlayer", "--qi-url=tcp://127.0.0.1:9559"])
     app.start()
     session = app.session
 
-    player = XarPlayer(session, xar_path, audio_override=audio_override)
+    if mode == "qianim":
+        player = QianimPlayer(session, path, audio_override=None)
+    else:
+        player = XarPlayer(session, path, audio_override=audio_override)
+
     player.run()
 
 if __name__ == "__main__":

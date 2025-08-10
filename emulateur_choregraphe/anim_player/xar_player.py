@@ -10,7 +10,11 @@ from pmt_player import PMTTrajectoryPlayer
 class XarPlayer:
     def __init__(self, session, xar_path, audio_override=None):
         self.session = session
-        self.motion, self.life, self.tts, self.audio = get_robot_services(session)
+        _srv = get_robot_services(session)
+        self.motion = _srv[0]
+        self.life   = _srv[1] if len(_srv) > 1 else None
+        self.tts    = _srv[2] if len(_srv) > 2 else None
+        self.audio  = _srv[3] if len(_srv) > 3 else None
         self.xar_path = xar_path
         self.audio_override = audio_override
         self.audio_id = None
