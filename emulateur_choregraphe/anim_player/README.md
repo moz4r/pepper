@@ -4,6 +4,8 @@ Lecteur Python d'animations **.xar** issues de Choregraphe pour robots Pepper/Qi
 Il peut exécuter un fichier `.xar` directement ou analyser un dossier de comportement
 contenant un fichier `.pml` et un audio optionnel.
 
+Les modules de classes portent désormais l'extension `.class`.
+
 ## Installation
 
 ```bash
@@ -17,13 +19,13 @@ Le script doit être lancé depuis une machine ayant accès au robot sur le port
 ### Fichier `.xar`
 
 ```bash
-python main.py chemin/vers/animation.xar
+python animation_player.py chemin/vers/animation.xar
 ```
 
 ### Dossier de comportement
 
 ```bash
-python main.py chemin/vers/dossier_comportement
+python animation_player.py chemin/vers/dossier_comportement
 ```
 
 Le premier fichier `.pml` trouvé est analysé pour localiser le `.xar` et un audio
