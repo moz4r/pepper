@@ -4,66 +4,114 @@
 import os
 import threading
 
+AUDIO_EXTS = (".ogg", ".mp3", ".wav", ".aac", ".flac")  # support large set; NAOqi handles ogg/mp3/wav
+
 def _has_async_post(audio_service):
     try:
         return hasattr(audio_service, "post") and hasattr(audio_service.post, "playFile")
     except Exception:
         return False
 
+def _candidate_audio_paths(hint_path, override=None):
+    """Return a list of candidate audio file paths based on the hint path (.qianim or .xar).
+    Rules:
+      - If override is a file, use it first.
+      - Else try same basename as hint_path with common audio extensions in the same folder.
+      - Then try ./audio/<basename>.<ext> and ./sounds/<basename>.<ext> beside the hint.
+    """
+    cands = []
+    if override:
+        if os.path.isfile(override):
+            cands.append(override)
+        else:
+            # allow override as a directory: look inside for same basename
+            if os.path.isdir(override):
+                hint_base = os.path.splitext(os.path.basename(hint_path))[0]
+                for ext in AUDIO_EXTS:
+                    p = os.path.join(override, hint_base + ext)
+                    if os.path.isfile(p):
+                        cands.append(p)
+
+    folder = os.path.dirname(os.path.abspath(hint_path))
+    base = os.path.splitext(os.path.basename(hint_path))[0]
+
+    # same folder, same basename
+    for ext in AUDIO_EXTS:
+        p = os.path.join(folder, base + ext)
+        if os.path.isfile(p):
+            cands.append(p)
+
+    # ./audio and ./sounds subfolders
+    for sub in ("audio", "sounds"):
+        subdir = os.path.join(folder, sub)
+        for ext in AUDIO_EXTS:
+            p = os.path.join(subdir, base + ext)
+            if os.path.isfile(p):
+                cands.append(p)
+
+    # remove duplicates preserving order
+    seen = set()
+    out = []
+    for p in cands:
+        if p not in seen:
+            out.append(p)
+            seen.add(p)
+    return out
+
 def play_audio_if_exists(audio_service, hint_path, override=None, store_id_callback=None):
+    """If an audio file matching the animation exists, play it.
+    Returns a thread or None. The thread is used only when we must
+    call playFile synchronously; we wrap it to keep non-blocking behavior.
     """
-    Joue un audio (override prioritaire, sinon basename du XAR).
-    Essaie de récupérer un ID de lecture ; sinon on s'appuiera sur stopAll().
-    """
-    def launch_audio(path, cb):
-        audio_id = None
+    if not audio_service:
+        return None
+    cands = _candidate_audio_paths(hint_path, override=override)
+    if not cands:
+        return None
+
+    audio_path = cands[0]
+
+    # Prefer async NAOqi task if available
+    if _has_async_post(audio_service):
         try:
-            print("[XAR] Lecture audio : {}".format(path))
-            # Essai 1 : API synchrone
-            try:
+            task_id = audio_service.post.playFile(audio_path)
+            if callable(store_id_callback):
                 try:
-                    audio_id = audio_service.playFile(path, 1.0, 0.0)
-                except TypeError:
-                    audio_id = audio_service.playFile(path)
-            except Exception:
-                audio_id = None
-            # Essai 2 : via .post si dispo
-            if (audio_id is None) and _has_async_post(audio_service):
-                try:
-                    try:
-                        audio_id = audio_service.post.playFile(path, 1.0, 0.0)
-                    except TypeError:
-                        audio_id = audio_service.post.playFile(path)
-                except Exception:
-                    audio_id = None
-            # Reporter l'ID si on l'a
-            if cb and (audio_id is not None):
-                try:
-                    cb(audio_id)
+                    store_id_callback(task_id)
                 except Exception:
                     pass
-        except Exception as e:
-            print("[ERROR] Impossible de jouer le fichier audio:", e)
+            return None
+        except Exception:
+            pass
 
-    # Priorité à l'override
-    if override and os.path.exists(override):
-        return threading.Thread(target=launch_audio, args=(override, store_id_callback))
-
-    # Fallback: basename du XAR
-    base, _ = os.path.splitext(hint_path)
-    for ext in [".mp3", ".wav", ".ogg"]:
-        audio_file = base + ext
-        if os.path.exists(audio_file):
-            return threading.Thread(target=launch_audio, args=(audio_file, store_id_callback))
-    return None
+    # Fallback: synchronous playFile; run it in a thread to avoid blocking
+    def _run():
+        try:
+            audio_service.playFile(audio_path)
+        except Exception:
+            pass
+    th = threading.Thread(target=_run)
+    th.daemon = True
+    # do not start here; let caller decide
+    return th
 
 def stop_audio(audio_service, audio_id):
+    """Try to stop audio playback if possible. If audio_id is known, use it; else try stopAll()."""
+    if not audio_service:
+        return
     try:
-        if audio_id is not None:
-            audio_service.stop(audio_id)
-            print("[XAR] Audio arrêté (par ID {}).".format(audio_id))
-        else:
-            audio_service.stopAll()
-            print("[XAR] Audio arrêté (stopAll).")
-    except Exception as e:
-        print("[ERROR] Impossible d'arrêter l'audio:", e)
+        if audio_id is not None and hasattr(audio_service, "stop"):
+            try:
+                audio_service.stop(audio_id)
+                return
+            except Exception:
+                pass
+        # Some versions expose stopAll()
+        if hasattr(audio_service, "stopAll"):
+            try:
+                audio_service.stopAll()
+                return
+            except Exception:
+                pass
+    except Exception:
+        pass

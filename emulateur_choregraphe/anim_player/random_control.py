@@ -1,5 +1,5 @@
 #!/usr/bin/env python
-# -*- coding: ascii -*-
+# -*- coding: utf-8 -*-
 
 """
 random_control.py (Body stiffness)
@@ -13,20 +13,91 @@ Exposed functions:
 
 Saved/restored:
 - ALSpeakingMovement, ALListeningMovement, ALBackgroundMovement, ALAutonomousBlinking
-- ALMotion MoveArmsEnabled / WalkArmsEnabled (supports variants)
+- (simplified) we no longer touch MoveArmsEnabled / WalkArmsEnabled
 - ALMotion Breath on Body
 - FULL Body stiffness snapshot -> force 1.0 -> restore
 """
-
 from __future__ import print_function
+import time
+
+def _hard_stop_motion(motion):
+    """Stoppe immédiatement toute tâche de mouvement résiduelle."""
+    if not motion:
+        return
+    try:
+        motion.stopMove()
+    except Exception:
+        pass
+    try:
+        motion.killAll()
+    except Exception:
+        pass
+
+def _go_to_standinit(session, speed=0.8):
+    """Tente de passer en posture StandInit. Retourne True si OK."""
+    try:
+        posture = session.service("ALRobotPosture")
+    except Exception:
+        posture = None
+    if not posture:
+        return False
+    try:
+        posture.goToPosture("StandInit", float(speed))
+        return True
+    except Exception:
+        return False
+
+def _zero_upper_body(session, speed=1.0):
+    """Remet les articulateurs du haut du corps à 0.0 rapidement (avec clamp léger).
+    Fait un second passage plus lent si l'écart résiduel dépasse 0.05 rad sur des joints clés.
+    """
+    try:
+        motion = session.service("ALMotion")
+    except Exception:
+        motion = None
+    if not motion:
+        return
+    names = [
+        "HeadYaw","HeadPitch",
+        "LShoulderPitch","LShoulderRoll","LElbowYaw","LElbowRoll","LWristYaw","LHand",
+        "RShoulderPitch","RShoulderRoll","RElbowYaw","RElbowRoll","RWristYaw","RHand",
+    ]
+    zeros = []
+    for n in names:
+        z = 0.0
+        lo = None; hi = None
+        try:
+            lim = motion.getLimits([n])
+            if isinstance(lim, (list, tuple)) and lim and isinstance(lim[0], (list, tuple)) and len(lim[0]) >= 2:
+                lo, hi = float(lim[0][0]), float(lim[0][1])
+        except Exception:
+            lo = None; hi = None
+        if lo is not None and hi is not None:
+            eps = 1e-6
+            low, high = lo + eps, hi - eps
+            if z < low:  z = low
+            if z > high: z = high
+        zeros.append(z)
+
+    try:
+        motion.angleInterpolationWithSpeed(names, zeros, float(speed))
+        check_joints = ["LShoulderPitch","RShoulderPitch","LShoulderRoll","RElbowRoll"]
+        cur = motion.getAngles(check_joints, True)
+        resid = [abs(v) for v in cur]
+        if any(v > 0.05 for v in resid):
+            # second passage un peu plus lent pour se poser
+            motion.angleInterpolationWithSpeed(names, zeros, 0.5)
+    except Exception:
+        pass
 
 _STATE = {
     "modules": {},       # serviceName -> {"enabled": bool, "paused": bool}
-    "moveArms": None,    # (leftEnabled, rightEnabled) or (None,None)
-    "walkArms": None,    # (leftEnabled, rightEnabled) or (None,None)
     "breath": None,      # bool for Body
-    "stiff_Body": None   # (names, values) snapshot
+    "stiff_Body": None,   # (names, values) snapshot,
+    "life_state": None,
+    "breath_parts": {},
 }
+
 
 def _set_service_enabled(session, name, enabled):
     try:
@@ -61,67 +132,6 @@ def _snapshot_service_state(session, name):
             pass
     return st
 
-def _get_move_arms_enabled(motion):
-    try:
-        lr = motion.getMoveArmsEnabled()
-        try:
-            return (bool(lr[0]), bool(lr[1]))
-        except Exception:
-            pass
-    except TypeError:
-        pass
-    except Exception:
-        pass
-    try:
-        l = bool(motion.getMoveArmsEnabled("LArm"))
-        r = bool(motion.getMoveArmsEnabled("RArm"))
-        return (l, r)
-    except Exception:
-        pass
-    try:
-        b = bool(motion.getMoveArmsEnabled("Arms"))
-        return (b, b)
-    except Exception:
-        pass
-    return (None, None)
-
-def _set_move_arms_enabled(motion, left, right):
-    try:
-        motion.setMoveArmsEnabled(bool(left), bool(right))
-        return True
-    except TypeError:
-        pass
-    except Exception:
-        pass
-    ok = True
-    try:
-        motion.setMoveArmsEnabled("LArm", bool(left))
-    except Exception:
-        ok = False
-    try:
-        motion.setMoveArmsEnabled("RArm", bool(right))
-    except Exception:
-        ok = False
-    return ok
-
-def _get_walk_arms_enabled(motion):
-    try:
-        lr = motion.getWalkArmsEnabled()
-        try:
-            return (bool(lr[0]), bool(lr[1]))
-        except Exception:
-            pass
-    except Exception:
-        pass
-    return (None, None)
-
-def _set_walk_arms_enabled(motion, left, right):
-    try:
-        motion.setWalkArmsEnabled(bool(left), bool(right))
-        return True
-    except Exception:
-        return False
-
 # -- Body stiffness helpers --
 def _snapshot_body_stiffness(motion):
     try:
@@ -152,14 +162,25 @@ def disable_random_modules(session):
     motion = None
     try:
         motion = session.service("ALMotion")
+        try:
+            if motion:
+                motion.waitUntilMoveIsFinished()
+        except Exception:
+            pass
+        time.sleep(0.3)  # settle after rest before re-enabling random
         motion.wakeUp()
         print("[RC] WakeUp OK")
+        _hard_stop_motion(motion)
     except Exception as e:
         print("[RC] WakeUp KO: %s" % e)
     try:
         life = session.service("ALAutonomousLife")
-        life.setState("interactive")
-        print("[RC] AutonomousLife -> interactive")
+        try:
+            _STATE["life_state"] = life.getState()
+        except Exception:
+            _STATE["life_state"] = None
+        #life.setState("disabled")
+        print("[RC] AutonomousLife -> disabled (snapshot: %s)" % _STATE["life_state"])
     except Exception:
         pass
 
@@ -177,33 +198,24 @@ def disable_random_modules(session):
             print("[RC] %s desactive" % name)
 
     if motion:
-        # MoveArms
-        try:
-            l, r = _get_move_arms_enabled(motion)
-            _STATE["moveArms"] = (l, r)
-            if l is not None and r is not None:
-                _set_move_arms_enabled(motion, False, False)
-                print("[RC] MoveArms (L,R) -> (False,False)")
-            else:
-                print("[RC] MoveArms: signature not found")
-        except Exception as e:
-            print("[RC] MoveArms set KO: %s" % e)
-
-        # WalkArms
-        try:
-            wl, wr = _get_walk_arms_enabled(motion)
-            _STATE["walkArms"] = (wl, wr)
-            if wl is not None and wr is not None:
-                _set_walk_arms_enabled(motion, False, False)
-                print("[RC] WalkArms (L,R) -> (False,False)")
-        except Exception:
-            pass
-
-        # Breath Body
+        # Breath Body/Arms/Head
         try:
             _STATE["breath"] = bool(motion.getBreathEnabled("Body"))
+            _STATE["breath_parts"] = {
+                "Body": _STATE["breath"],
+                "Arms": (bool(motion.getBreathEnabled("Arms")) if hasattr(motion, "getBreathEnabled") else None),
+                "Head": (bool(motion.getBreathEnabled("Head")) if hasattr(motion, "getBreathEnabled") else None),
+            }
             motion.setBreathEnabled("Body", False)
-            print("[RC] Breath Body -> False")
+            try:
+                motion.setBreathEnabled("Arms", False)
+            except Exception:
+                pass
+            try:
+                motion.setBreathEnabled("Head", False)
+            except Exception:
+                pass
+            print("[RC] Breath Body/Arms/Head -> False")
         except Exception:
             pass
 
@@ -212,6 +224,22 @@ def disable_random_modules(session):
             _STATE["stiff_Body"] = _snapshot_body_stiffness(motion)
             _force_body_stiffness(motion, 1.0)
             print("[RC] Stiffness Body -> 1.0")
+            try:
+                if motion:
+                    motion.waitUntilMoveIsFinished()
+            except Exception:
+                pass
+            time.sleep(0.3)  # settle after stop-random + stiffen
+            # -- Safe reset: StandInit then gentle zero as fallback
+            ok = _go_to_standinit(session, 0.8)
+            if not ok:
+                _zero_upper_body(session, speed=0.8)
+            try:
+                if motion:
+                    motion.waitUntilMoveIsFinished()
+            except Exception:
+                pass
+
         except Exception:
             pass
 
@@ -219,6 +247,12 @@ def enable_random_modules(session):
     motion = None
     try:
         motion = session.service("ALMotion")
+        try:
+            if motion:
+                motion.waitUntilMoveIsFinished()
+        except Exception:
+            pass
+        time.sleep(0.3)  # settle after rest before re-enabling random
     except Exception:
         pass
 
@@ -233,29 +267,20 @@ def enable_random_modules(session):
 
         # Restore Breath
         try:
-            if _STATE.get("breath") is not None:
-                motion.setBreathEnabled("Body", bool(_STATE["breath"]))
-                print("[RC] Breath Body restaure -> %s" % bool(_STATE["breath"]))
-        except Exception:
-            pass
-
-        # Restore MoveArms
-        try:
-            if _STATE.get("moveArms") is not None:
-                l, r = _STATE["moveArms"]
-                if l is not None and r is not None:
-                    _set_move_arms_enabled(motion, bool(l), bool(r))
-                    print("[RC] MoveArms restaure -> (%s,%s)" % (l, r))
-        except Exception as e:
-            print("[RC] MoveArms restore KO: %s" % e)
-
-        # Restore WalkArms
-        try:
-            if _STATE.get("walkArms") is not None:
-                wl, wr = _STATE["walkArms"]
-                if wl is not None and wr is not None:
-                    _set_walk_arms_enabled(motion, bool(wl), bool(wr))
-                    print("[RC] WalkArms restaure -> (%s,%s)" % (wl, wr))
+            bp = _STATE.get("breath_parts") or {}
+            if "Body" in bp and bp["Body"] is not None:
+                motion.setBreathEnabled("Body", bool(bp["Body"]))
+            if "Arms" in bp and bp["Arms"] is not None:
+                try:
+                    motion.setBreathEnabled("Arms", bool(bp["Arms"]))
+                except Exception:
+                    pass
+            if "Head" in bp and bp["Head"] is not None:
+                try:
+                    motion.setBreathEnabled("Head", bool(bp["Head"]))
+                except Exception:
+                    pass
+            print("[RC] Breath Body/Arms/Head restored")
         except Exception:
             pass
 
@@ -280,5 +305,26 @@ def enable_random_modules(session):
         life = session.service("ALAutonomousLife")
         life.setState("interactive")
         print("[RC] AutonomousLife -> interactive")
+    except Exception:
+        pass
+
+    # Restore ALAutonomousLife state
+    try:
+        life = session.service("ALAutonomousLife")
+        st = _STATE.get("life_state")
+        if st:
+            life.setState(st)
+            print("[RC] AutonomousLife restored -> %s" % st)
+        else:
+            life.setState("interactive")
+            print("[RC] AutonomousLife -> interactive (default)")
+    except Exception:
+        pass
+
+# Final safety: stop any residual navigation move (non-destructive)
+    try:
+        if motion:
+            motion.stopMove()
+            print("[RC] stopMove() at end")
     except Exception:
         pass
