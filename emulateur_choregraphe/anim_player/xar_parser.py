@@ -27,8 +27,33 @@ def parse_xar(xar_path, tts, motion):
 
     def findall(pat):
         return root.findall(pat, ns) if ns else root.findall(pat.replace("ns:", ""))
+    # --- Robust fallback finders (namespace-agnostic) ---
+    def _iter_local(node, local):
+        for e in node.iter():
+            tag = e.tag.rsplit('}', 1)[-1]
+            if tag == local:
+                yield e
 
-    timelines = findall(".//ns:Timeline")
+    def findall_local(root_node, local):
+        return list(_iter_local(root_node, local))
+
+    def findall_any(tagname):
+        """Try namespaced .findall first, then localname fallback."""
+        try:
+            res = root.findall(tagname, ns) if ns else root.findall(tagname.replace("ns:", ""))
+            if res:
+                return res
+        except Exception:
+            pass
+        # Fallback: strip leading ".//ns:" or ".//"
+        local = tagname.split(":")[-1].replace(".", "").replace("/", "")
+        # Map known tags
+        mapping = {"Timeline":"Timeline", "ActuatorCurve":"ActuatorCurve", "Key":"Key", "Box":"Box",
+                   "Input":"Input", "Output":"Output", "Parameter":"Parameter"}
+        return findall_local(root, mapping.get(local, local))
+
+
+    timelines = findall_any(".//ns:Timeline")
     timeline_fps = []
     for t in timelines:
         raw = t.attrib.get("fps")
@@ -41,7 +66,7 @@ def parse_xar(xar_path, tts, motion):
 
     curve_fps = {}
     for t, f in timeline_fps:
-        curves_under_tl = t.findall(".//ns:ActuatorCurve", ns) if ns else t.findall(".//ActuatorCurve")
+        curves_under_tl = findall_any(".//ns:ActuatorCurve")
         for c in curves_under_tl:
             curve_fps[id(c)] = f
 
@@ -49,7 +74,7 @@ def parse_xar(xar_path, tts, motion):
     uniq = sorted({f for (_, f) in timeline_fps}) or [fallback_fps]
     print("[DEBUG] FPS détectés par Timeline :", ", ".join(str(x) for x in uniq))
 
-    boxes = findall(".//ns:Box")
+    boxes = findall_any(".//ns:Box")
     for box in boxes:
         if box.attrib.get("name") == "Say":
             params = {p.attrib.get('name'): p.attrib.get('value', '') for p in (box.findall("ns:Parameter", ns) if ns else box.findall("Parameter"))}
@@ -68,7 +93,13 @@ def parse_xar(xar_path, tts, motion):
             except Exception as e:
                 print("[ERROR] Impossible d'exécuter TTS:", e)
 
-    curves = findall(".//ns:ActuatorCurve")
+    curves = findall_any(".//ns:ActuatorCurve")
+    # If no curves detected so far, try a global localname scan as a last resort
+    if not curves:
+        curves = list(_iter_local(root, "ActuatorCurve"))
+        if not curves:
+            print("[WARN] Aucune ActuatorCurve trouvée (y compris fallback localname).")
+
     print("----- [DEBUG] Détails des courbes par articulateur -----")
     per_act = {}
     for idx, curve in enumerate(curves):
@@ -76,7 +107,7 @@ def parse_xar(xar_path, tts, motion):
         unit = curve.attrib.get("unit", "0")
         fps = curve_fps.get(id(curve), fallback_fps)
 
-        keys = curve.findall("ns:Key", ns) if ns else curve.findall("Key")
+        keys = list(_iter_local(curve, "Key"))
         if not keys or not actuator:
             continue
 
@@ -105,7 +136,7 @@ def parse_xar(xar_path, tts, motion):
     print("[DEBUG] Doublons évités :", ignored)
 
     for actuator, (curve, fps, unit) in selected_info.items():
-        keys = curve.findall("ns:Key", ns) if ns else curve.findall("Key")
+        keys = list(_iter_local(curve, "Key"))
         if not keys:
             continue
         ks = sorted(keys, key=lambda k: float(k.attrib["frame"]))
