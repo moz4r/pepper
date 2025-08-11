@@ -66,32 +66,15 @@ def parse_xar(xar_path, tts, motion):
 
     curve_fps = {}
     for t, f in timeline_fps:
-        curves_under_tl = findall_any(".//ns:ActuatorCurve")
-        for c in curves_under_tl:
-            curve_fps[id(c)] = f
+        try:
+            for c in _iter_local(t, "ActuatorCurve"):
+                curve_fps[id(c)] = f
+        except Exception:
+            pass
 
     fallback_fps = max([f for (_, f) in timeline_fps]) if timeline_fps else 25.0
     uniq = sorted({f for (_, f) in timeline_fps}) or [fallback_fps]
     print("[DEBUG] FPS détectés par Timeline :", ", ".join(str(x) for x in uniq))
-
-    boxes = findall_any(".//ns:Box")
-    for box in boxes:
-        if box.attrib.get("name") == "Say":
-            params = {p.attrib.get('name'): p.attrib.get('value', '') for p in (box.findall("ns:Parameter", ns) if ns else box.findall("Parameter"))}
-            text = params.get("Text", "")
-            speed = params.get("Speed (%)", "100")
-            shaping = params.get("Voice shaping (%)", "100")
-            sentence = "\\\\RSPD={}\\\\ \\\\VCT={}\\\\ {} \\\\RST\\\\".format(speed, shaping, text)
-            use_blocking = any(r.attrib.get('type') == 'Lock' for r in (box.findall("ns:Resource", ns) if ns else box.findall("Resource")))
-            try:
-                if use_blocking:
-                    print("[XAR] TTS (bloquant):", text)
-                    tts.say(sentence)
-                else:
-                    print("[XAR] TTS (non bloquant):", text)
-                    tts.post.say(sentence)
-            except Exception as e:
-                print("[ERROR] Impossible d'exécuter TTS:", e)
 
     curves = findall_any(".//ns:ActuatorCurve")
     # If no curves detected so far, try a global localname scan as a last resort
@@ -124,7 +107,7 @@ def parse_xar(xar_path, tts, motion):
     selected_info = {}
     for actuator, lst in per_act.items():
         print("[CURVES] {} : {} courbe(s)".format(actuator, len(lst)))
-        lst_sorted = sorted(lst, key=lambda x: (x[5]-x[4], x[4]), reverse=True)
+        lst_sorted = sorted(lst, key=lambda x: (((x[5]-x[4]) / float(x[1] or 25.0)), (x[4] / float(x[1] or 25.0))), reverse=True)
         for i, (curve, fps, unit, nk, fmin, fmax) in enumerate(lst_sorted):
             mark = " <-- ignorée (doublon)" if i > 0 else ""
             print("  - curve#{:d}  unit={}  keys={}  frames=[{:.0f}..{:.0f}] [{:.2f}s → {:.2f}s]  fps={}{}".format(
