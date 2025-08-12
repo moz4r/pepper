@@ -1,53 +1,86 @@
+#!/usr/bin/env python
 # -*- coding: utf-8 -*-
+
+import qi
+import sys
 import time
-from naoqi import ALProxy
+import threading
 
-class MyClass(GeneratedClass):
+# --- Fake TTS ---
+class FakeTTS(object):
+    def say(self, text):
+        print("[Fake TTS] {}".format(text))
+        return "ok"
+
+# --- Fake ALMemory ---
+class FakeMemory(object):
     def __init__(self):
-        GeneratedClass.__init__(self)
-        self.tts = None
-        self.motion = None
+        self.data = {"NAOqiReady": True}
+        self.lock = threading.Lock()
+        self._version = "0.1-fake"
 
-    def onLoad(self):
-        try:
-            # Comme le script tourne directement sur le robot
-            robot_ip = "127.0.0.1"
-            robot_port = 9559
+    def version(self):
+        print("[Fake ALMemory] version -> {}".format(self._version))
+        return self._version
 
-            self.tts = ALProxy("ALTextToSpeech", robot_ip, robot_port)
-            self.motion = ALProxy("ALMotion", robot_ip, robot_port)
+    def insertData(self, key, value):
+        with self.lock:
+            self.data[key] = value
+        print("[Fake ALMemory] insertData {}={}".format(key, value))
+        return True
 
-            print("[Choregraphe] Services initialisés")
-        except Exception as e:
-            print("[ERREUR] Impossible d’initialiser les services :", e)
+    def getData(self, key):
+        if key == "NAOqiReady":
+            print("[Fake ALMemory] getData {} -> True".format(key))
+            return True
+        with self.lock:
+            value = self.data.get(key, None)
+        print("[Fake ALMemory] getData {} -> {}".format(key, value))
+        return value
 
-    def onUnload(self):
-        print("[Choregraphe] Script déchargé")
+    def raiseEvent(self, key, value):
+        with self.lock:
+            self.data[key] = value
+        print("[Fake ALMemory] raiseEvent {}={}".format(key, value))
+        return True
 
-    def onInput_onStart(self):
-        try:
-            self.motion.wakeUp()
-            print("[OK] Robot réveillé")
+# --- Fake ALSystem ---
+class FakeSystem(object):
+    def __init__(self):
+        self.version_str = "2.9.0.0-fake"
+        self.robot_name = "PepperFake"
 
-            self.tts.say("Bonjour, je suis Pepper !")
+    def systemVersion(self):
+        print("[Fake ALSystem] systemVersion -> {}".format(self.version_str))
+        return self.version_str
 
-            names = ["HeadYaw", "HeadPitch"]
-            angles = [0.5, -0.3]
-            self.motion.setAngles(names, angles, 0.2)
-            print("[OK] Tête bougée")
+    def robotName(self):
+        print("[Fake ALSystem] robotName -> {}".format(self.robot_name))
+        return self.robot_name
 
-            time.sleep(5)
+    def robotType(self):
+        print("[Fake ALSystem] robotType -> Pepper")
+        return "Pepper"
 
-            self.motion.setAngles(names, [0.0, 0.0], 0.2)
-            print("[OK] Tête revenue au centre")
+def main():
+    try:
+        session = qi.Session()
+        session.listenStandalone("tcp://0.0.0.0:9999")
+        print("[INFO] Session listenStandalone OK sur port 9999")
+    except RuntimeError as e:
+        print("[ERR] Impossible de démarrer FakeNaoqi:", e)
+        sys.exit(1)
 
-            self.tts.say("Test terminé.")
-        except Exception as e:
-            print("[ERREUR] Problème pendant l’exécution :", e)
+    session.registerService("ALTextToSpeech", FakeTTS())
+    session.registerService("ALMemory", FakeMemory())
+    session.registerService("ALSystem", FakeSystem())
 
-        self.onStopped()
+    print("[INFO] Fake NAOqi prêt sur tcp://0.0.0.0:9999")
+    try:
+        while True:
+            time.sleep(1)
+    except KeyboardInterrupt:
+        print("\n[INFO] Arrêt demandé par l'utilisateur.")
 
-    def onInput_onStop(self):
-        print("[Choregraphe] Arrêt demandé")
-        self.onUnload()
-        self.onStopped()
+if __name__ == "__main__":
+    main()
