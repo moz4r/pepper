@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 # -*- coding: utf-8 -*-
 """
-pepper_py3_simple.py — Test local minimal pour Pepper en Python 3
+Test local minimal pour Pepper en Python 3
 Connexion directe à la session locale (tcp://127.0.0.1:9559).
 Il vous faud le package python 3 avant ! Dispo sur 2.5 et 2.9
 """
@@ -41,7 +41,7 @@ def main():
 
     tts.say("Test terminé. Je passe au repos.")
     motion.rest()
-    print("OK ✅")
+    print("OK")
 
 if __name__ == "__main__":
     main()
