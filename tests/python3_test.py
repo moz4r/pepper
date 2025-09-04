@@ -4,6 +4,7 @@
 Test local minimal pour Pepper en Python 3
 Connexion directe à la session locale (tcp://127.0.0.1:9559).
 Il vous faud le package python 3 avant ! Dispo sur 2.5 et 2.9
+Commande : /home/nao/.local/share/PackageManager/apps/python3nao/bin/runpy3.sh python3_test.py
 """
 
 import time
