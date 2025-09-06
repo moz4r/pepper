@@ -1,4 +1,7 @@
-# PepperLife
+# PepperLife 0.0.1
+
+![pepperlife_edited](https://github.com/user-attachments/assets/fba8f19b-ef94-4246-bdc5-7bd2d5027dfb)
+
 
 Pipeline léger **NAOqi + OpenAI** pour **Pepper** :
 
@@ -22,13 +25,11 @@ Pipeline léger **NAOqi + OpenAI** pour **Pepper** :
 - **Clé OpenAI** (`OPENAI_API_KEY`)
 - Services NAOqi : **ALAudioDevice**, **ALTextToSpeech**, **ALLeds**, **ALMotion**, **ALRobotPosture**
 
-Réglage audio utile (sur Pepper) :
 ```bash
+
+Réglage audio utile (sur Pepper) :
 amixer sset Capture 100%
 
-
-
-### Installation
 
 ## Installation
 
