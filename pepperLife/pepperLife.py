@@ -186,24 +186,38 @@ def chat(user_text, hist):
 def say_async(tts, leds, cap, text):
     """
     Lance le TTS en non-bloquant si possible (tts.post.say),
-    sinon fallback bloquant. Retourne un handle ("post", task_id) ou ("sync", None).
+    sinon fallback non-bloquant via qi.async; dernier recours: bloquant.
+    Retourne: ("post", task_id) | ("future", fut) | ("sync", None)
     """
     SPEAKING["on"] = True
-    leds.speaking_start()   # oreilles OFF, yeux bleus
+    leds.speaking_start()   # oreilles OFF, yeux blancs
     try:
         try:
             cap.mon[:] = []; cap.pre[:] = []  # anti-larsen soft
         except:
             pass
-        # Non-bloquant si dispo
+
+        # 1) Non-bloquant natif
         try:
             task_id = tts.post.say(text)
             return ("post", task_id)
         except Exception:
             pass
-        # Fallback bloquant
+
+        # 2) Fallback non-bloquant via qi.async / qi.async_
+        try:
+            import qi as _qi
+            _async = getattr(_qi, "async", None) or getattr(_qi, "async_", None)
+            if _async:
+                fut = _async(tts.say, text)
+                return ("future", fut)
+        except Exception:
+            pass
+
+        # 3) Dernier recours: bloquant
         tts.say(text)
         return ("sync", None)
+
     except:
         SPEAKING["on"] = False
         try: leds.speaking_stop()
@@ -214,36 +228,33 @@ def wait_tts_end(tts, leds, handle, timeout=8.0):
     kind, tok = handle
     t0 = time.time()
 
-    # Attente propre tant que possible
-    if hasattr(tts, "isSpeaking"):
-        while time.time() - t0 < timeout:
-            try:
-                if not tts.isSpeaking():
-                    break
-            except:
-                break
-            time.sleep(0.05)
+    # Future qi -> attendre la fin du tts.say lancé via qi.async
+    if kind == "future" and hasattr(tok, "value"):
+        try:
+            tok.value()
+        except:
+            pass
     else:
-        # Pas d'API fiable => micro-attente si post.say
-        if kind == "post":
-            time.sleep(0.35)
+        # Attente "classique"
+        if hasattr(tts, "isSpeaking"):
+            while time.time() - t0 < timeout:
+                try:
+                    if not tts.isSpeaking():
+                        break
+                except:
+                    break
+                time.sleep(0.05)
+        else:
+            if kind == "post":
+                time.sleep(0.35)
 
-    # Fin d'attente (ou timeout) -> on rend l'écoute
     SPEAKING["on"] = False
     try:
         leds.speaking_stop()   # oreilles ON, yeux blancs
     except:
         pass
-
-    # Purge très brève pour éviter d'avaler la fin du TTS
-    # (on laisse 'mon' vivant pendant le TTS, ici on nettoie juste 'pre')
-    try:
-        # cap n'est pas dans la portée ici dans ta version → on ne purge que via l'appelant après
-        pass
-    except:
-        pass
-
     time.sleep(0.06)
+
 
 
 def say_quick(tts, leds, cap, text):
@@ -360,10 +371,6 @@ def _has_motion_markers(text):
     return MARKER_RE.search(text) is not None
 
 def speak_and_actions_parallel(tts, leds, cap, rep, acts, beh):
-    """
-    Parle (async) et exécute les actions en parallèle dans un thread.
-    Attente: fin de la parole + fin des gestes (ou timeout court).
-    """
     rep_clean = MARKER_RE.sub("", rep).strip()
 
     def _do_actions():
@@ -378,23 +385,22 @@ def speak_and_actions_parallel(tts, leds, cap, rep, acts, beh):
 
     th = threading.Thread(target=_do_actions); th.daemon = True
 
-    # Démarrer TTS (async si possible)
-    h = say_async(tts, leds, cap, rep_clean)
-
-    # Lancer les gestes en parallèle
+    # ⬇️ lancer les gestes d'abord (ils partiront même si le TTS retombait en bloquant)
     th.start()
 
-    # Attendre fin TTS
+    # puis démarrer le TTS (désormais non bloquant via PATCH 1)
+    h = say_async(tts, leds, cap, rep_clean)
+
+    # attendre la fin de la parole
     wait_tts_end(tts, leds, h, timeout=20.0)
 
-    # Purge anti-larsen résiduelle avant de repasser en écoute
     try:
         cap.mon[:] = []; cap.pre[:] = []
     except:
         pass
 
-    # Attendre fin gestes (limite de sécurité)
     th.join(timeout=10.0)
+
 
 # ===========================
 #   MAIN
@@ -444,14 +450,22 @@ def main():
         # départ
         started=False; since=None; t_wait=time.time()
         while time.time()-t_wait < 5.0:
+            # 🔇 tant que Pepper parle, on ne démarre pas un nouveau tour
+            if SPEAKING.get("on"):
+                time.sleep(0.05)
+                continue
+
             vol = avgabs(b"".join(cap.mon[-8:]) if cap.mon else b"")
             if vol >= START:
-                if since is None: since = time.time()
-                elif time.time()-since >= 0.06: started=True; break
+                if since is None:
+                    since = time.time()
+                elif time.time()-since >= 0.06:
+                    started=True; break
             else:
                 since=None
             time.sleep(0.03)
         if not started: continue
+
 
         # enregistrement + endpointing agressif
         cap.start(); t0=time.time(); last=t0; low=0
