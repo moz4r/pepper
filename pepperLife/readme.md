@@ -20,7 +20,7 @@ Pipeline léger **NAOqi + OpenAI** pour **Pepper** :
 
 ## Prérequis
 
-- **Pepper (NAOqi 2.5->2.9 / 2.5->2.7 préféré)**
+- **Pepper (NAOqi 2.7)**
 - **Python 3** (sur Pepper via l app `python3nao`, ou PC avec SDK NAOqi)
 - **Clé OpenAI** (`OPENAI_API_KEY`)
 - Services NAOqi : **ALAudioDevice**, **ALTextToSpeech**, **ALLeds**, **ALMotion**, **ALRobotPosture**
