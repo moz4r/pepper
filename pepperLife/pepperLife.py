@@ -417,11 +417,7 @@ def main():
 
     tts  = s.service("ALTextToSpeech"); tts.setLanguage("French"); tts.setVolume(0.85)
     leds = PepperLEDs(s)
-    rec  = s.service("ALAudioRecorder")
-    try: rec.stopMicrophonesRecording()
-    except: pass
-    try: subprocess.call(["amixer","sset","Capture","100%"])
-    except: pass
+
 
     if not os.getenv("OPENAI_API_KEY"):
         tts.say("Clé Open A I absente."); return
