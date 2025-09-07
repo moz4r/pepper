@@ -40,7 +40,8 @@ amixer sset Capture 100%
 # Sur Pepper OU sur PC
 git clone https://github.com/moz4r/pepper.git
 cd pepper/pepperLife
-pip3 install --user -r requirements.txt
+/home/nao/.local/share/PackageManager/apps/python3nao/bin/python3 -m pip install openai
+
 
 
 ### Configuration
