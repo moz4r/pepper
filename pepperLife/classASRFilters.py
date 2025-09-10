@@ -3,10 +3,6 @@
 
 import time, re, unicodedata
 
-BLACKLIST_STRICT = {
-    "je suis", "c est", "c'est", "je suis.", "c est.", "c'est.",
-}
-
 def _norm_text(t):
     if not t: return ""
     t = unicodedata.normalize("NFD", t).lower()
@@ -16,10 +12,10 @@ def _norm_text(t):
     t = re.sub(r"\s+", " ", t).strip()
     return t
 
-def is_noise_utterance(txt):
+def is_noise_utterance(txt, blacklist_strict):
     n = _norm_text(txt)
     if not n: return True
-    if n in BLACKLIST_STRICT: return True
+    if n in blacklist_strict: return True
     if len(n) <= 3: return True
     if " " not in n and len(n) <= 5: return True
     if n.endswith(".") and len(n) <= 8: return True

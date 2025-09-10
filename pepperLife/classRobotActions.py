@@ -46,10 +46,6 @@ def _clamp(val, lo, hi):
     except:
         return lo
 
-
-
-
-
 class PepperActions(object):
     """
     - Contient TOUTES les commandes moteur (_cmds).
@@ -73,8 +69,6 @@ class PepperActions(object):
         targets = [_deg_to_rad(a) for a in angles_deg]
         # Un seul appel -> tous les joints bougent ensemble, NAOqi attend la fin
         self.motion.angleInterpolationWithSpeed(names, targets, sp)
-
-
 
     def __init__(self, session):
         self.session = session

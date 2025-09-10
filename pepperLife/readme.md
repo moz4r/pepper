@@ -1,4 +1,4 @@
-# PepperLife 0.0.1
+# PepperLife 0.0.2
 
 ![pepperlife_edited](https://github.com/user-attachments/assets/fba8f19b-ef94-4246-bdc5-7bd2d5027dfb)
 
@@ -12,7 +12,7 @@ Pipeline léger **NAOqi + OpenAI** pour **Pepper** :
 - 🕺 Parole & mouvements en parallèle (TTS non bloquant via `post.say` si dispo)  //TODO
 - 🔇 Anti-larsen & anti-bruit (blacklist + heuristiques)
 - 🧩 Architecture par classes normalisées : `classLEDs.py`, `classActions.py`, `classRobotBehavior.py`
-- ✔️ Version actuelle : **0.0.1**
+- ✔️ Version actuelle : **0.0.2**
 
 ---
 
@@ -46,20 +46,17 @@ cd pepper/pepperLife
 
 ### Configuration
 
-# Obligatoire
-export OPENAI_API_KEY="sk-xxxxxxxxxxxxxxxx"
+La configuration se fait maintenant via le fichier `config.json`.
+Une fois le script lancé, un fichier `config.json` est créé à partir de `config.json.default`.
 
-# Facultatif (des valeurs par défaut existent dans le code)
-export OPENAI_STT_MODEL="gpt-4o-mini-transcribe"
-export OPENAI_CHAT_MODEL="gpt-4o-mini"
+Modifiez `config.json` pour y mettre vos propres paramètres :
+- **connection**: `ip` et `port` de votre robot.
+- **openai**: `api_key`, `stt_model`, `chat_model`, `system_prompt`.
+- **audio**: paramètres pour la détection de la parole.
+- **asr_filters**: `blacklist_strict` pour filtrer les faux positifs.
+- **log**: `verbosity` pour le niveau de log.
 
-# Si NAOqi n’est pas sur 127.0.0.1:9559
-export PEPPER_IP="192.168.1.10"
-export PEPPER_PORT="9559"
-
-# Rendre ces exports persistants :
-echo 'export OPENAI_API_KEY="sk-xxxx"' >> ~/.bashrc
-source ~/.bashrc
+La clé API OpenAI peut être mise soit dans `config.json` (champ `api_key`), soit via la variable d'environnement `OPENAI_API_KEY`.
 
 ###Lancement
 

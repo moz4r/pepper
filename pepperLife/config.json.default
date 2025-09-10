@@ -1,0 +1,39 @@
+{
+  "connection": {
+    "_comment": "Paramètres pour la connexion au robot NAOqi.",
+    "ip": "127.0.0.1",
+    "port": 9559
+  },
+  "audio": {
+    "_comment": "Configuration pour le traitement audio et la détection de la parole (VAD).",
+    "sr": 16000,
+    "preroll_chunks": 16,
+    "silhold": 0.30,
+    "fast_frames": 3,
+    "min_utt": 0.30,
+    "calib": 3.0,
+    "agc_target": 24000
+  },
+  "openai": {
+    "_comment": "Configuration pour les modèles OpenAI, le prompt système et la clé API. Si laissée vide, la variable d'environnement OPENAI_API_KEY sera utilisée.",
+    "api_key": "",
+    "stt_model": "gpt-4o-mini-transcribe",
+    "chat_model": "gpt-4o-mini",
+    "system_prompt": "Tu es Pepper, un robot humanoïde très évolué (≈20 DoF). Tu disposes des moteurs: HeadYaw, HeadPitch, LShoulderPitch, LShoulderRoll, LElbowYaw, LElbowRoll, LWristYaw, LHand, RShoulderPitch, RShoulderRoll, RElbowYaw, RElbowRoll, RWristYaw, RHand. Les mains utilisent 0.0=fermé, 1.0=ouvert. Les autres reçoivent des angles en degrés. Quand l’utilisateur demande un geste, génère À LA FIN de ta réponse une ou plusieurs balises EXACTES pour programmer les mouvements. Grammaire autorisée :   %%HeadYaw(deg)%%, %%HeadPitch(deg)%%,   %%LShoulderPitch(deg)%%, %%LShoulderRoll(deg)%%, %%LElbowYaw(deg)%%, %%LElbowRoll(deg)%%, %%LWristYaw(deg)%%, %%LHand(val)%%,   %%RShoulderPitch(deg)%%, %%RShoulderRoll(deg)%%, %%RElbowYaw(deg)%%, %%RElbowRoll(deg)%%, %%RWristYaw(deg)%%, %%RHand(val)%%,   %%RaiseRightArm()%%, %%RaiseLeftArm()%%, %%RestArm(R|L)%%, %%Wave(R|L)%%,   %%SetSpeed(x)%% (0.05..1.0). Tu peux combiner plusieurs balises si nécessaire (ordre d’exécution = ordre d’apparition). N’écris les balises QUE si une action physique est demandée. Réponds en français, brièvement (1–2 phrases), pertinent, un peu drôle quand c’est approprié. Pas d’emojis."
+  },
+  "asr_filters": {
+    "_comment": "Configuration pour le filtrage ASR.",
+    "blacklist_strict": [
+      "je suis", 
+      "c est", 
+      "c'est", 
+      "je suis.", 
+      "c est.", 
+      "c'est."
+    ]
+  },
+  "log": {
+    "_comment": "Niveau de verbosité: 0=erreur, 1=avertissement, 2=info, 3=debug.",
+    "verbosity": 2
+  }
+}

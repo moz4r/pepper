@@ -21,7 +21,7 @@ def peakabs(b):
         if a > m: m = a
     return m
 
-def agc(raw, target=24000, limit=4.0):
+def agc(raw, target, limit=4.0):
     mx = peakabs(raw)
     if mx <= 0: return raw
     k = min(limit, float(target)/float(mx))
@@ -36,7 +36,7 @@ def agc(raw, target=24000, limit=4.0):
         out.append(w & 0xFF); out.append((w>>8) & 0xFF)
     return bytes(out)
 
-def trim_tail_silence(raw, stop_thr, frame_ms=20, max_trim_ms=600, sr=16000):
+def trim_tail_silence(raw, stop_thr, sr, frame_ms=20, max_trim_ms=600):
     if not raw: return raw
     step = int(sr * frame_ms / 1000.0) * 2
     cut = 0; L=len(raw); max_steps = int(max_trim_ms / float(frame_ms))

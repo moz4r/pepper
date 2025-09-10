@@ -29,23 +29,6 @@ class BehaviorManager(object):
         try: self._acts.set_speed(self.default_speed)
         except: pass
 
-    def has_motion_markers(self, text):
-        """
-        Retourne True si 'text' contient au moins une balise d'action
-        que PepperActions sait exécuter.
-        """
-        if not text or not getattr(self, "_acts", None):
-            return False
-        try:
-            # on réutilise le parseur centralisé de PepperActions
-            for it in self._acts.parse_markers(text):
-                if self._acts.is_motor_action(it["name"]):
-                    return True
-            return False
-        except Exception:
-            return False
-
-
     def boot(self):
         """Prépare un état 'prêt' au démarrage (non intrusif)."""
         # Réveille les moteurs (si déjà réveillé, NAOqi ignore)
