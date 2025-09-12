@@ -27,8 +27,8 @@ def _free_audio_slots(ad, prefixes=("PepperASR_", "SpeechRecognition", "ASR_", "
     return freed
 
 class Listener(object):
-    """Pré-roll + enregistrement + WAV mémoire, avec subscribe robuste."""
-    def __init__(self, s, speaking_flag, audio_config):
+    """Pré-roll + enregistrement + WAV mémoire, avec subscribe robuste.""" 
+    def __init__(self, s, speaking_flag, audio_config, logger):
         self.ad = s.service("ALAudioDevice")
         self.name = "PepperASR_%d_%d" % (int(time.time()), random.randint(100,999))
         s.registerService(self.name, self)
@@ -36,6 +36,8 @@ class Listener(object):
         self.sr = audio_config['sr']
         self.preroll_chunks = audio_config['preroll_chunks']
         self.agc_target = audio_config['agc_target']
+        self.log = logger
+        self.microEnabled = {"on": True}
 
         freed = _free_audio_slots(self.ad)
         if freed:
@@ -58,6 +60,14 @@ class Listener(object):
         self.maxpre = self.preroll_chunks
         print("[AUDIO] %dk mono — %s" % (self.sr//1000, self.name))
 
+    def toggle_micro(self):
+        self.microEnabled["on"] = not self.microEnabled["on"]
+        self.log(f"Microphone enabled: {self.microEnabled['on']}", level='info')
+        return self.microEnabled["on"]
+
+    def is_micro_enabled(self):
+        return self.microEnabled.get("on", False)
+
     def warmup(self, min_chunks=6, timeout=1.5):
         t0 = time.time()
         while time.time() - t0 < timeout:
@@ -71,7 +81,7 @@ class Listener(object):
             try: buf = bytes(buf)
             except: return
 
-        if self.SPEAKING["on"]:
+        if self.SPEAKING["on"] or not self.microEnabled["on"]:
             # NE PAS couper complètement: on entretient un petit ring pour le VAD
             self.mon.append(buf)
             if len(self.mon) > 24:
@@ -96,9 +106,13 @@ class Listener(object):
         raw = b"".join(self.rec); self.rec = []
         raw = agc(raw, self.agc_target)
         raw = trim_tail_silence(raw, stop_thr, self.sr, 20)
-        buf = io.BytesIO(); wf = wave.open(buf, "wb")
-        wf.setnchannels(1); wf.setsampwidth(2); wf.setframerate(self.sr)
-        wf.writeframes(raw); wf.close()
+        buf = io.BytesIO()
+        wf = wave.open(buf, "wb")
+        wf.setnchannels(1)
+        wf.setsampwidth(2)
+        wf.setframerate(self.sr)
+        wf.writeframes(raw)
+        wf.close()
         return buf.getvalue()
 
     def close(self):

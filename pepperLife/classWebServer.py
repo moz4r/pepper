@@ -3,6 +3,7 @@
 
 import threading
 import os
+import json
 try:
     from http.server import SimpleHTTPRequestHandler
     from socketserver import TCPServer
@@ -14,13 +15,14 @@ class WebServer(object):
     """
     Une classe pour gérer un serveur web simple sur le robot.
     """
-    def __init__(self, logger, ui_dir, port=8090):
+    def __init__(self, logger, ui_dir, port=8090, mic_toggle_callback=None):
         """
         Initialise le serveur web.
         """
         self.logger = logger
         self.port = port
         self.ui_dir = ui_dir
+        self.mic_toggle_callback = mic_toggle_callback
         self.httpd = None
         self.http_thread = None
         self.logger("Initialisation du serveur web sur le port %d..." % self.port, level='info')
@@ -66,6 +68,17 @@ class WebServer(object):
                     pass
 
             def do_GET(self):
+                if self.path == "/api/mic_toggle":
+                    if self.server.mic_toggle_callback:
+                        enabled = self.server.mic_toggle_callback()
+                        self.send_response(200)
+                        self.send_header("Content-Type", "application/json")
+                        self.end_headers()
+                        self.wfile.write(json.dumps({"enabled": enabled}).encode("utf-8"))
+                    else:
+                        self._send_503("Mic toggle callback not configured.")
+                    return
+
                 if self.path.startswith("/last_capture.png"):
                     if not parent.last_capture:
                         return self._send_503("Pas de capture disponible.")
@@ -109,6 +122,7 @@ class WebServer(object):
                 self.httpd = TCPServer(("", p), _Handler)
                 self.httpd._root_dir = self.ui_dir
                 self.httpd._logger  = self.logger
+                self.httpd.mic_toggle_callback = self.mic_toggle_callback
                 self.port = self.httpd.server_address[1]
                 break
             except Exception as e:

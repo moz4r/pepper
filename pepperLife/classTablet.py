@@ -6,7 +6,6 @@ import time
 import struct
 
 from classWebServer import WebServer
-from classCamera import classCamera
 
 class classTablet(object):
     """
@@ -15,10 +14,11 @@ class classTablet(object):
     Permet de fournir la version via un provider (callable) ou un fichier.
     """
     def __init__(self, session=None, logger=None, port=8088,
-                 version_text=u"dev", version_file=None, version_provider=None):
+                 version_text=u"dev", version_file=None, version_provider=None, mic_toggle_callback=None):
         self.session = session
         self._log = logger or (lambda msg, **k: print(msg))
         self.port = int(port)
+        self.mic_toggle_callback = mic_toggle_callback
 
         # Source de vérité pour la version
         self.version_provider = version_provider
@@ -27,7 +27,7 @@ class classTablet(object):
 
         self.script_dir = os.path.dirname(os.path.abspath(__file__))
         self.ui_dir = os.path.join(self.script_dir, "ui_pepperlife")
-        self.web_server = WebServer(logger=self._log, ui_dir=self.ui_dir, port=self.port)
+        self.web_server = WebServer(logger=self._log, ui_dir=self.ui_dir, port=self.port, mic_toggle_callback=self.mic_toggle_callback)
         self.port = self.web_server.port
         self.tablet = None
         self.last_capture = None
@@ -40,10 +40,6 @@ class classTablet(object):
         except Exception as e:
             self._log("[Tablet] ALTabletService indisponible: %s" % e)
 
-        self.cam = classCamera(session, self._log, res=1, color=13, fps=5)  # QVGA 320x240, BGR, ~5 FPS
-
-
-
         # Clean à la sortie du process
         atexit.register(self.stop)
 
@@ -53,12 +49,11 @@ class classTablet(object):
         self.version_text = self._resolve_version(self.version_text)
         self._ensure_ui_files()
         self._log("[Tablet] Version UI = %s" % self.version_text)
-        try:
-            self.cam.start()
-        except Exception:
-            pass
         self.web_server.start(self)
         self.port = self.web_server.port
+        if self.tablet:
+            self.tablet.wakeUp()
+            self.tablet.turnScreenOn(True)
         if show:
             self.show()
         return self.get_url()
@@ -87,10 +82,6 @@ class classTablet(object):
     def stop(self):
         """Arrête proprement: cache la webview + coupe le serveur HTTP."""
         self.hide()
-        try:
-            self.cam.stop()
-        except Exception:
-            pass
         if self.web_server:
             self.web_server.stop()
 
@@ -161,7 +152,7 @@ class classTablet(object):
     <html lang="fr"><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1">
     <title>PepperLife</title>
     <style>
-    :root{--fg:#8EC8FF;--bg:#000;--btn:#111;--btnb:#1c1c1c;--white:#fff;--red:#e02727;--border:#2a2a2a}
+    :root{--fg:#8EC8FF;--bg:#000;--btn:#111;--btnb:#1c1c1c;--white:#fff;--red:#e02727;--grey:#888;--border:#2a2a2a}
     *{box-sizing:border-box;-webkit-tap-highlight-color:transparent}
     html,body{height:100%;margin:0}
     body{background:var(--bg);color:#cfe6ff;font-family:-apple-system,BlinkMacSystemFont,"Segoe UI",Roboto,Ubuntu,"Helvetica Neue",Arial,sans-serif}
@@ -183,7 +174,8 @@ class classTablet(object):
     .badgewrap{height:100%;display:flex;align-items:center;justify-content:center}
     .badge{width:220px;height:220px;border-radius:50%;background:var(--white);box-shadow:0 10px 40px rgba(0,0,0,.45);
             display:flex;align-items:center;justify-content:center}
-    .dot{width:90px;height:90px;border-radius:50%;background:var(--red);box-shadow:inset 0 0 20px rgba(0,0,0,.25)}
+    .dot{width:90px;height:90px;border-radius:50%;background:var(--grey);box-shadow:inset 0 0 20px rgba(0,0,0,.25); cursor: pointer;}
+    .dot.listening{background:var(--red);}
 
     .camhead{display:flex;align-items:center;justify-content:space-between;margin-bottom:10px}
     .camtitle{font-weight:700;opacity:.9}
@@ -215,7 +207,7 @@ class classTablet(object):
 
         <div class="content">
         <div class="panel badgewrap">
-            <div class="badge"><div class="dot" id="status-dot"></div></div>
+            <div class="badge"><div class="dot listening" id="status-dot"></div></div>
         </div>
 
         <div class="panel">
@@ -242,6 +234,19 @@ class classTablet(object):
         }
         document.getElementById('btn-on').addEventListener('click',  function(){ log('[UI] LIFE ON');  });
         document.getElementById('btn-sleep').addEventListener('click',function(){ log('[UI] SLEEP');    });
+
+        var statusDot = document.getElementById('status-dot');
+        statusDot.addEventListener('click', function() {
+            fetch('/api/mic_toggle').then(res => res.json()).then(data => {
+                if (data.enabled) {
+                    statusDot.classList.add('listening');
+                    log('[UI] Microphone ON');
+                } else {
+                    statusDot.classList.remove('listening');
+                    log('[UI] Microphone OFF');
+                }
+            });
+        });
 
         var _poll = null;
         function startPngPolling(){
@@ -274,8 +279,3 @@ class classTablet(object):
         if not os.path.exists(fav):
             with io.open(fav, "wb") as f:
                 f.write(b"")
-
-
-
-
-    

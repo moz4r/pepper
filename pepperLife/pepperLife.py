@@ -8,7 +8,6 @@
 # - Vision unifiée: prompt configurable dans config.json (comme les moteurs)
 
 import sys, time, io, wave, os, atexit, random, json, base64
-from openai import OpenAI
 from classRobotActions import PepperActions, MARKER_RE
 from classLEDs import PepperLEDs
 from classRobotBehavior import BehaviorManager
@@ -19,80 +18,13 @@ from classAudioUtils import avgabs
 from classSystem import bcolors
 from classTablet import classTablet
 from classSystem import version as SysVersion
-
-_client = None
-
-def client():
-    global _client
-    if _client is None:
-        _client = OpenAI(timeout=15.0)
-    return _client
-
-
-def stt(wav_bytes):
-    f = ("speech.wav", wav_bytes, "audio/wav")
-    try:
-        r = client().audio.transcriptions.create(
-            model=CONFIG['openai']['stt_model'], file=f, language="fr", temperature=0
-        )
-    except Exception:
-        r = client().audio.transcriptions.create(
-            model="whisper-1", file=f, language="fr", temperature=0
-        )
-    return (getattr(r, "text", None) or "").strip() or None
-
-
-def chat(user_text, hist):
-    msgs = [{"role":"system","content":CONFIG['openai']['system_prompt']}]
-    for role, content in hist:
-        msgs.append({"role": role, "content": content})
-    msgs.append({"role":"user","content":user_text})
-    resp = client().chat.completions.create(
-        model=CONFIG['openai']['chat_model'], messages=msgs, temperature=0.6, max_tokens=60
-    )
-    return resp.choices[0].message.content.strip().replace("\n"," ").strip()
-
-
-def vision_chat(user_text, image_bytes, hist):
-    """
-    Chat vision unifié :
-    - Prompt système configurable via CONFIG['vision']['system_prompt']
-    - Modèle configurable via CONFIG['vision']['model']
-    - Historique vision optionnel (passé via hist)
-    - Le texte utilisateur est passé tel quel, le modèle décide quoi faire (décrire, compter, etc.)
-    """
-    image_base64 = base64.b64encode(image_bytes).decode('utf-8')
-
-    msgs = [{"role": "system", "content": CONFIG['vision']['system_prompt'] }]
-
-    # Historique dédié à la vision (si on veut conserver du contexte multi-tours)
-    for role, content in hist:
-        msgs.append({"role": role, "content": content})
-
-    msgs.append({
-        "role": "user",
-        "content": [
-            {"type": "text", "text": user_text},
-            {
-                "type": "image_url",
-                "image_url": { "url": f"data:image/png;base64,{image_base64}" }
-            }
-        ]
-    })
-
-    resp = client().chat.completions.create(
-        model=CONFIG['vision'].get('model', 'gpt-4o-mini'),
-        messages=msgs,
-        temperature=0.2,
-        max_tokens=120
-    )
-    return resp.choices[0].message.content.strip().replace("\n"," ").strip()
-
+from classSTT import STT
+from classChat import Chat
+from classVision import Vision
 
 CONFIG = {
     "log": { "verbosity": 2 }
 }
-
 
 def log(msg, level='info', color=None):
     verbosity_map = {'error': 0, 'warning': 1, 'info': 2, 'debug': 3}
@@ -103,13 +35,11 @@ def log(msg, level='info', color=None):
         else:
             print(msg)
 
-
 def _logger(msg, **kwargs):
     try:
         log(msg, **kwargs)
     except Exception:
         print(msg)
-
 
 def load_config():
     global CONFIG
@@ -148,18 +78,6 @@ def load_config():
             json.dump(user_config, f, indent=2)
 
     CONFIG = user_config
-
-
-def _utterance_triggers_vision(txt_lower):
-    """Retourne True si l'énoncé déclenche une analyse vision.
-    Utilise CONFIG['vision']['triggers'] (liste) pour rester configurable.
-    """
-    try:
-        triggers = [t.lower() for t in CONFIG['vision'].get('triggers', [])]
-    except Exception:
-        triggers = []
-    return any(t in txt_lower for t in triggers)
-
 
 def main():
     load_config()
@@ -200,11 +118,21 @@ def main():
         else:
             raise Exception("Impossible de se connecter à un service NAOqi.")
 
+    leds = PepperLEDs(s)
+    cap = Listener(s, SPEAKING, CONFIG['audio'], _logger); atexit.register(cap.close)
+    
+    def toggle_micro():
+        is_enabled = cap.toggle_micro()
+        if not is_enabled:
+            leds.idle()
+        return is_enabled
+
     _tablet_ui = classTablet(
         session=s,
         logger=_logger,
         port=8088,
-        version_provider=SysVersion.get
+        version_provider=SysVersion.get,
+        mic_toggle_callback=toggle_micro
     )
     _tablet_ui.start(show=True)
 
@@ -213,9 +141,10 @@ def main():
     beh.set_actions(acts)
     beh.boot()
 
+    stt_service = STT(CONFIG)
+    chat_service = Chat(CONFIG)
+    vision_service = Vision(CONFIG, s, _logger)
     tts  = s.service("ALTextToSpeech"); tts.setLanguage("French"); tts.setVolume(0.85)
-    leds = PepperLEDs(s)
-    cap = Listener(s, SPEAKING, CONFIG['audio']); atexit.register(cap.close)
     speaker = Speaker(tts, leds, cap, SPEAKING, acts, beh)
 
     api_key = CONFIG['openai'].get('api_key')
@@ -227,6 +156,9 @@ def main():
         tts.say("Clé OpenAI absente."); return
 
     leds.idle()
+
+    vision_service.start_camera()
+    atexit.register(vision_service.stop_camera)
 
     cap.warmup(min_chunks=8, timeout=2.0)
 
@@ -266,6 +198,9 @@ def main():
             time.sleep(0.03)
         if not started: continue
 
+        if not cap.is_micro_enabled():
+            continue
+
         # enregistrement + endpointing agressif
         cap.start(); t0=time.time(); last=t0; low=0
         leds.listening_recording()
@@ -284,7 +219,7 @@ def main():
 
         # STT -> Routeur (vision/chat) -> parler & bouger
         try:
-            txt = stt(wav); log("[ASR] " + str(txt), level='info')
+            txt = stt_service.stt(wav); log("[ASR] " + str(txt), level='info')
             if not txt:
                 continue
 
@@ -298,9 +233,9 @@ def main():
                 continue
 
             # ----- Déclencheur générique vision (configurable) -----
-            if _utterance_triggers_vision(txt_lower):
+            if vision_service._utterance_triggers_vision(txt_lower):
                 log("[VISION] Déclenchement par triggers-config.", level='info')
-                png_bytes = _tablet_ui.cam.get_png()
+                png_bytes = vision_service.get_png()
                 _tablet_ui.set_last_capture(png_bytes)
                 _tablet_ui.show_last_capture_on_tablet()
                 if not png_bytes:
@@ -309,7 +244,7 @@ def main():
 
                 leds.processing()
                 log("Appel à vision_chat en cours...", level='info')
-                rep = vision_chat(txt, png_bytes, hist_vision)
+                rep = vision_service.vision_chat(txt, png_bytes, hist_vision)
                 log(f"Retour de vision_chat. Réponse: '{rep}'", level='info')
                 log("[GPT-V] " + rep, level='info', color=bcolors.OKCYAN)
                 speaker.say_quick(rep)
@@ -329,7 +264,7 @@ def main():
             # ----- Chat texte standard -----
             hist.append(("user", txt)); hist = hist[-8:]
             leds.processing()
-            rep = chat(txt, hist[:-1]); log("[GPT] " + rep, level='info', color=bcolors.OKCYAN)
+            rep = chat_service.chat(txt, hist[:-1]); log("[GPT] " + rep, level='info', color=bcolors.OKCYAN)
             rep, _ = beh.apply_speed_markers(rep)
             speaker.speak_and_actions_parallel(rep)
             rep_clean = MARKER_RE.sub("", rep).strip()
@@ -340,6 +275,9 @@ def main():
             log("[ERR] " + str(e), level='error', color=bcolors.FAIL)
             speaker.say_quick("Petit pépin réseau, on réessaie.")
 
+
+if __name__ == "__main__":
+    main()
 
 if __name__ == "__main__":
     main()
