@@ -1,12 +1,13 @@
-# -*- coding: utf-8 -*- 
-# pepper_poc_chat_main.py — NAOqi + OpenAI (STT + Chat) réactif
+# -*- coding: utf-8 -*-
+# pepper_poc_chat_main.py — NAOqi + OpenAI (STT + Chat + Vision) réactif
 # - Écoute locale via ALAudioDevice (16 kHz mono) + endpointing court
 # - STT OpenAI (gpt-4o-mini-transcribe -> fallback whisper-1)
 # - Chat court persona Pepper + balises d’actions NAOqi (robot_actions.py)
 # - LEDs gérées dans leds_manager.py (oreilles ON quand il écoute, OFF sinon)
 # - TTS asynchrone: parle pendant que le robot bouge
+# - Vision unifiée: prompt configurable dans config.json (comme les moteurs)
 
-import sys, time, io, wave, os, atexit, random, json
+import sys, time, io, wave, os, atexit, random, json, base64
 from openai import OpenAI
 from classRobotActions import PepperActions, MARKER_RE
 from classLEDs import PepperLEDs
@@ -16,13 +17,17 @@ from classSpeak import Speaker
 from classASRFilters import is_noise_utterance, is_recent_duplicate
 from classAudioUtils import avgabs
 from classSystem import bcolors
+from classTablet import classTablet
+from classSystem import version as SysVersion
 
 _client = None
+
 def client():
     global _client
     if _client is None:
         _client = OpenAI(timeout=15.0)
     return _client
+
 
 def stt(wav_bytes):
     f = ("speech.wav", wav_bytes, "audio/wav")
@@ -36,6 +41,7 @@ def stt(wav_bytes):
         )
     return (getattr(r, "text", None) or "").strip() or None
 
+
 def chat(user_text, hist):
     msgs = [{"role":"system","content":CONFIG['openai']['system_prompt']}]
     for role, content in hist:
@@ -46,11 +52,47 @@ def chat(user_text, hist):
     )
     return resp.choices[0].message.content.strip().replace("\n"," ").strip()
 
+
+def vision_chat(user_text, image_bytes, hist):
+    """
+    Chat vision unifié :
+    - Prompt système configurable via CONFIG['vision']['system_prompt']
+    - Modèle configurable via CONFIG['vision']['model']
+    - Historique vision optionnel (passé via hist)
+    - Le texte utilisateur est passé tel quel, le modèle décide quoi faire (décrire, compter, etc.)
+    """
+    image_base64 = base64.b64encode(image_bytes).decode('utf-8')
+
+    msgs = [{"role": "system", "content": CONFIG['vision']['system_prompt'] }]
+
+    # Historique dédié à la vision (si on veut conserver du contexte multi-tours)
+    for role, content in hist:
+        msgs.append({"role": role, "content": content})
+
+    msgs.append({
+        "role": "user",
+        "content": [
+            {"type": "text", "text": user_text},
+            {
+                "type": "image_url",
+                "image_url": { "url": f"data:image/png;base64,{image_base64}" }
+            }
+        ]
+    })
+
+    resp = client().chat.completions.create(
+        model=CONFIG['vision'].get('model', 'gpt-4o-mini'),
+        messages=msgs,
+        temperature=0.2,
+        max_tokens=120
+    )
+    return resp.choices[0].message.content.strip().replace("\n"," ").strip()
+
+
 CONFIG = {
-    "log": {
-        "verbosity": 2
-    }
+    "log": { "verbosity": 2 }
 }
+
 
 def log(msg, level='info', color=None):
     verbosity_map = {'error': 0, 'warning': 1, 'info': 2, 'debug': 3}
@@ -61,9 +103,17 @@ def log(msg, level='info', color=None):
         else:
             print(msg)
 
+
+def _logger(msg, **kwargs):
+    try:
+        log(msg, **kwargs)
+    except Exception:
+        print(msg)
+
+
 def load_config():
     global CONFIG
-    
+
     script_dir = os.path.dirname(os.path.abspath(__file__))
     config_path = os.path.join(script_dir, 'config.json')
     default_config_path = os.path.join(script_dir, 'config.json.default')
@@ -79,7 +129,7 @@ def load_config():
     with open(config_path, 'r') as f:
         user_config = json.load(f)
 
-    # Vérifier les clés manquantes
+    # Vérifier les clés manquantes (merge superficiel + sous-dictionnaires)
     updated = False
     for key, value in default_config.items():
         if key not in user_config:
@@ -99,6 +149,18 @@ def load_config():
 
     CONFIG = user_config
 
+
+def _utterance_triggers_vision(txt_lower):
+    """Retourne True si l'énoncé déclenche une analyse vision.
+    Utilise CONFIG['vision']['triggers'] (liste) pour rester configurable.
+    """
+    try:
+        triggers = [t.lower() for t in CONFIG['vision'].get('triggers', [])]
+    except Exception:
+        triggers = []
+    return any(t in txt_lower for t in triggers)
+
+
 def main():
     load_config()
 
@@ -115,6 +177,7 @@ def main():
     CALIB = CONFIG['audio']['calib']
     BLACKLIST_STRICT = set(CONFIG['asr_filters']['blacklist_strict'])
     SPEAKING = {"on": False}
+
     s = None
     try:
         import qi
@@ -137,6 +200,13 @@ def main():
         else:
             raise Exception("Impossible de se connecter à un service NAOqi.")
 
+    _tablet_ui = classTablet(
+        session=s,
+        logger=_logger,
+        port=8088,
+        version_provider=SysVersion.get
+    )
+    _tablet_ui.start(show=True)
 
     acts = PepperActions(s)
     beh  = BehaviorManager(s, default_speed=0.5)
@@ -147,7 +217,6 @@ def main():
     leds = PepperLEDs(s)
     cap = Listener(s, SPEAKING, CONFIG['audio']); atexit.register(cap.close)
     speaker = Speaker(tts, leds, cap, SPEAKING, acts, beh)
-
 
     api_key = CONFIG['openai'].get('api_key')
     if api_key:
@@ -161,7 +230,8 @@ def main():
 
     cap.warmup(min_chunks=8, timeout=2.0)
 
-    hist = []
+    hist = []            # historique chat texte
+    hist_vision = []     # historique dédié à la vision (optionnel)
 
     # Calibration bruit
     log("Calibration du bruit...", level='info')
@@ -176,9 +246,9 @@ def main():
 
     speaker.say_quick("Je suis réveillé !")
 
-    # Boucle: listen → record → STT → chat(+actions) → TTS
+    # Boucle: listen → record → STT → (vision ? chat) → TTS/Actions
     while True:
-        # départ
+        # départ écoute
         started=False; since=None; t_wait=time.time()
         while time.time()-t_wait < 5.0:
             if SPEAKING.get("on"):
@@ -196,7 +266,6 @@ def main():
             time.sleep(0.03)
         if not started: continue
 
-
         # enregistrement + endpointing agressif
         cap.start(); t0=time.time(); last=t0; low=0
         leds.listening_recording()
@@ -213,33 +282,64 @@ def main():
         wav = cap.stop(STOP)
         if not wav: continue
 
-        # STT -> Chat -> parler & bouger
+        # STT -> Routeur (vision/chat) -> parler & bouger
         try:
-            txt = stt(wav); log("[ASR] " + txt, level='info')
+            txt = stt(wav); log("[ASR] " + str(txt), level='info')
             if not txt:
                 continue
+
+            txt_lower = txt.lower()
+
+            # ----- Commandes explicites d'affichage caméra (optionnel) -----
+            if "affiche la caméra" in txt_lower or "affiche le flux" in txt_lower:
+                log("[VISION] Affichage du flux vidéo...", level='info')
+                _tablet_ui.show_video_feed()
+                speaker.say_quick("Voilà ce que je vois en direct.")
+                continue
+
+            # ----- Déclencheur générique vision (configurable) -----
+            if _utterance_triggers_vision(txt_lower):
+                log("[VISION] Déclenchement par triggers-config.", level='info')
+                png_bytes = _tablet_ui.cam.get_png()
+                _tablet_ui.set_last_capture(png_bytes)
+                _tablet_ui.show_last_capture_on_tablet()
+                if not png_bytes:
+                    speaker.say_quick("Je n'ai pas réussi à prendre de photo.")
+                    continue
+
+                leds.processing()
+                log("Appel à vision_chat en cours...", level='info')
+                rep = vision_chat(txt, png_bytes, hist_vision)
+                log(f"Retour de vision_chat. Réponse: '{rep}'", level='info')
+                log("[GPT-V] " + rep, level='info', color=bcolors.OKCYAN)
+                speaker.say_quick(rep)
+                # Historique vision (nettoyé des marqueurs éventuels)
+                hist_vision.append(("user", txt))
+                hist_vision.append(("assistant", rep))
+                # on garde court
+                hist_vision[:] = hist_vision[-6:]
+                continue
+
+            # ----- Filtrage bruit / doublons -----
             if is_noise_utterance(txt, BLACKLIST_STRICT) or is_recent_duplicate(txt):
                 log("[ASR] filtré (bruit/blacklist): " + txt, level='info', color=bcolors.WARNING)
                 leds.idle()
                 continue
-            if not txt: continue
-            hist.append(("user", txt)); hist = hist[-8:]
 
+            # ----- Chat texte standard -----
+            hist.append(("user", txt)); hist = hist[-8:]
             leds.processing()
             rep = chat(txt, hist[:-1]); log("[GPT] " + rep, level='info', color=bcolors.OKCYAN)
-
             rep, _ = beh.apply_speed_markers(rep)
-
             speaker.speak_and_actions_parallel(rep)
-
             rep_clean = MARKER_RE.sub("", rep).strip()
             hist.append(("assistant", rep_clean))
-
             time.sleep(0.5)
 
         except Exception as e:
             log("[ERR] " + str(e), level='error', color=bcolors.FAIL)
             speaker.say_quick("Petit pépin réseau, on réessaie.")
+
 
 if __name__ == "__main__":
     main()
