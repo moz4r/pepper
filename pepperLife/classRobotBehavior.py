@@ -31,13 +31,6 @@ class BehaviorManager(object):
 
     def boot(self):
         """Prépare un état 'prêt' au démarrage (non intrusif)."""
-        # Réveille les moteurs (si déjà réveillé, NAOqi ignore)
-        try:
-            self.m.wakeUp()
-            print("[BC] boot: wakeUp() OK")
-        except Exception as e:
-            print("[BC] boot: wakeUp() err:", e)
-
         # Collision des bras ON (sécurité par défaut)
         try:
             self.m.setExternalCollisionProtectionEnabled("Arms", True)

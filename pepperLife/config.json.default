@@ -50,5 +50,10 @@
   "log": {
     "_comment": "Niveau de verbosité: 0=erreur, 1=avertissement, 2=info, 3=debug.",
     "verbosity": 2
+  },
+  "boot": {
+    "_comment": "Configuration pour le démarrage du robot.",
+    "boot_vieAutonome": true,
+    "boot_reveille": true
   }
 }

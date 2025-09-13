@@ -132,7 +132,8 @@ def main():
         logger=_logger,
         port=8088,
         version_provider=SysVersion.get,
-        mic_toggle_callback=toggle_micro
+        mic_toggle_callback=toggle_micro,
+        listener=cap
     )
     _tablet_ui.start(show=True)
 
@@ -158,6 +159,7 @@ def main():
     leds.idle()
 
     vision_service.start_camera()
+    _tablet_ui.cam = vision_service
     atexit.register(vision_service.stop_camera)
 
     cap.warmup(min_chunks=8, timeout=2.0)
@@ -175,6 +177,23 @@ def main():
     START = max(4, int(base*1.6))
     STOP  = max(3, int(base*0.9))
     log("[VAD] base=%d START=%d STOP=%d"%(base,START,STOP), level='debug')
+
+    # Boot options
+    if CONFIG.get('boot', {}).get('boot_vieAutonome', True):
+        try:
+            life_service = s.service("ALAutonomousLife")
+            if life_service.getState() == "disabled":
+                life_service.setState("interactive")
+        except Exception as e:
+            log("Impossible de définir la vie autonome: %s" % e, level='error')
+
+    if CONFIG.get('boot', {}).get('boot_reveille', True):
+        try:
+            motion_service = s.service("ALMotion")
+            if not motion_service.robotIsWakeUp():
+                motion_service.wakeUp()
+        except Exception as e:
+            log("Impossible de réveiller le robot: %s" % e, level='error')
 
     speaker.say_quick("Je suis réveillé !")
 
@@ -238,6 +257,7 @@ def main():
                 png_bytes = vision_service.get_png()
                 _tablet_ui.set_last_capture(png_bytes)
                 _tablet_ui.show_last_capture_on_tablet()
+
                 if not png_bytes:
                     speaker.say_quick("Je n'ai pas réussi à prendre de photo.")
                     continue

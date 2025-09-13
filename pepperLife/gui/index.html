@@ -1,0 +1,251 @@
+<!doctype html>
+    <html lang="fr"><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1">
+    <title>PepperLife</title>
+    <style>
+    :root{--fg:#8EC8FF;--bg:#000;--btn:#111;--btnb:#1c1c1c;--white:#fff;--red:#e02727;--grey:#888;--border:#2a2a2a; --green: #1e6b2d;}
+    *{box-sizing:border-box;-webkit-tap-highlight-color:transparent}
+    html,body{height:100%;margin:0}
+    body{background:var(--bg);color:#cfe6ff;font-family:-apple-system,BlinkMacSystemFont,"Segoe UI",Roboto,Ubuntu,"Helvetica Neue",Arial,sans-serif}
+    .wrap{display:flex;flex-direction:column;min-height:100%}
+
+    .topbar{display:flex;align-items:center;justify-content:space-between;padding:12px 16px}
+    .title{font-size:24px;color:var(--fg);font-weight:800;letter-spacing:.4px}
+    .title .version{font-size: 16px;}
+    .actions{display:flex;align-items:center;gap:12px}
+    .btn{border:1px solid var(--btnb);background:var(--btn);color:#d6e8ff;padding:12px 14px;
+        min-width:100px;min-height:48px;display:inline-flex;align-items:center;justify-content:center;
+        font-weight:800;letter-spacing:.6px;border-radius:10px;cursor:pointer;user-select:none}
+    .btn:active{transform:scale(.98)}
+    .btn.on{border-color: var(--green);}
+    .btn.off{border-color: var(--red);}
+
+    .volume-slider-container {display: flex; align-items: center; gap: 8px;}
+    .volume-slider {
+        -webkit-appearance: none;
+        width: 100px;
+        height: 8px;
+        border-radius: 5px;
+        background: #ddd;
+        outline: none;
+        opacity: 0.7;
+        -webkit-transition: .2s;
+        transition: opacity .2s;
+    }
+    .volume-slider::-webkit-slider-thumb {
+        -webkit-appearance: none;
+        appearance: none;
+        width: 20px;
+        height: 20px;
+        border-radius: 50%;
+        background: var(--fg);
+        cursor: pointer;
+    }
+
+    .content{flex:1;display:grid;grid-template-columns:1fr 1.1fr;gap:20px;padding:16px}
+    .panel{border:1px solid var(--border);border-radius:14px;padding:18px;background:rgba(255,255,255,.02)}
+
+    .badgewrap{height:100%;display:flex;align-items:center;justify-content:center}
+    .badge{width:220px;height:220px;border-radius:50%;background:var(--white);box-shadow:0 10px 40px rgba(0,0,0,.45);
+            display:flex;align-items:center;justify-content:center}
+    .dot{width:90px;height:90px;border-radius:50%;background:var(--grey);box-shadow:inset 0 0 20px rgba(0,0,0,.25); cursor: pointer;}
+    .dot.listening{background:var(--red);}
+
+    .camhead{display:flex;align-items:center;justify-content:space-between;margin-bottom:10px}
+    .camtitle{font-weight:700;opacity:.9}
+    .camframe{position:relative;width:100%;aspect-ratio:4/3;background:#0e0e0e;border:1px solid var(--border);border-radius:12px;
+                overflow:hidden;display:flex;align-items:center;justify-content:center}
+    .camplaceholder{position:absolute;inset:0;display:flex;align-items:center;justify-content:center;
+                    color:#7aa7cc;opacity:.7;font-weight:600;letter-spacing:.3px}
+    video, img#cam{position:absolute;inset:0;width:100%;height:100%;object-fit:cover;display:none}
+
+    footer {
+        padding: 10px;
+        text-align: center;
+        font-size: 12px;
+        color: #888;
+    }
+
+    .internet-status.on { color: var(--green); }
+    .internet-status.off { color: var(--red); }
+
+    @media (max-width: 920px) {
+        .content{grid-template-columns:1fr;gap:16px}
+    }
+    @media (max-width: 640px) {
+        .title{font-size:20px}
+        .btn{min-width:92px;min-height:44px;padding:10px 12px}
+        .badge{width:200px;height:200px}
+        .dot{width:80px;height:80px}
+    }
+    </style>
+    <body>
+    <div class="wrap">
+        <div class="topbar">
+        <div class="title">PepperLife <span class="version">%VER%</span></div>
+        <div class="actions">
+            <div class="volume-slider-container">
+                <input type="range" min="0" max="100" step="1" value="80" class="volume-slider" id="volume-slider">
+            </div>
+            <div class="btn" id="btn-life">LIFE</div>
+            <div class="btn" id="btn-sleep">SLEEP</div>
+        </div>
+        </div>
+
+        <div class="content">
+        <div class="panel badgewrap">
+            <div class="badge"><div class="dot listening" id="status-dot"></div></div>
+        </div>
+
+        <div class="panel">
+            <div class="camhead">
+            <div class="camtitle">Retour caméra</div>
+            <div style="opacity:.6;font-size:12px" id="cam-status">en attente…</div>
+            </div>
+            <div class="camframe">
+            <video id="camvid" autoplay muted playsinline></video>
+            <img id="cam" alt="cam feed"/>
+            <div class="camplaceholder" id="cam-ph">Aucune source vidéo</div>
+            </div>
+        </div>
+        </div>
+        <footer>
+            Naoqi: <span id="naoqi-version">...</span> / IP: <span id="ip-addresses">...</span> / Internet: <span id="internet-status">...</span>
+        </footer>
+    </div>
+
+ <script>
+        function log(msg){ try { console.log(msg); } catch(e){} }
+
+        var _poll = null;
+
+        function show_last_capture(){
+        // stoppe tout polling en cours (au cas où)
+        if (_poll) { clearInterval(_poll); _poll = null; }
+
+        var img = document.getElementById('cam');
+        var vid = document.getElementById('camvid');
+        var ph  = document.getElementById('cam-ph');
+        var st  = document.getElementById('cam-status');
+
+        // montrer l'image unique, cacher le placeholder et la <video>
+        vid.style.display='none'; vid.removeAttribute('src');
+        img.style.display='block';
+        ph.style.display='none';
+
+        // charge la dernière capture (avec cache-buster)
+        img.src = "/last_capture.png?ts=" + Date.now();
+        st.textContent = 'Capture';
+        }  // ←← IMPORTANT : fermer la fonction ici
+
+        // --- tout le reste doit être AU NIVEAU GLOBAL (en dehors de la fonction) ---
+
+        const btnLife = document.getElementById('btn-life');
+        const btnSleep = document.getElementById('btn-sleep');
+        const statusDot = document.getElementById('status-dot');
+        const volumeSlider = document.getElementById('volume-slider');
+        const naoqiVersion = document.getElementById('naoqi-version');
+        const ipAddresses = document.getElementById('ip-addresses');
+        const internetStatus = document.getElementById('internet-status');
+
+        function updateLifeButton(state) {
+        if (state === 'interactive') {
+            btnLife.textContent = 'LIFE ON';
+            btnLife.classList.add('on');
+            btnLife.classList.remove('off');
+        } else {
+            btnLife.textContent = 'LIFE OFF';
+            btnLife.classList.add('off');
+            btnLife.classList.remove('on');
+        }
+        }
+
+        function updateSleepButton(isAwake) {
+        if (isAwake) {
+            btnSleep.textContent = 'REVEILLÉ';
+            btnSleep.classList.add('on');
+            btnSleep.classList.remove('off');
+        } else {
+            btnSleep.textContent = 'ENDormi';
+            btnSleep.classList.add('off');
+            btnSleep.classList.remove('on');
+        }
+        }
+
+        btnLife.addEventListener('click', () => {
+            fetch('/api/autonomous_life/toggle').then(res => res.json()).then(data => {
+                updateLifeButton(data.state);
+            });
+        });
+
+        btnSleep.addEventListener('click', () => {
+            fetch('/api/posture/toggle').then(res => res.json()).then(data => {
+                updateSleepButton(data.is_awake);
+            });
+        });
+
+        statusDot.addEventListener('click', function() {
+            fetch('/api/mic_toggle').then(res => res.json()).then(data => {
+                if (data.enabled) {
+                    statusDot.classList.add('listening');
+                    log('[UI] Microphone ON');
+                } else {
+                    statusDot.classList.remove('listening');
+                    log('[UI] Microphone OFF');
+                }
+            });
+        });
+
+        volumeSlider.addEventListener('input', (event) => {
+            const volume = event.target.value;
+            fetch('/api/volume/set', {
+                method: 'POST',
+                headers: {
+                    'Content-Type': 'application/json'
+                },
+                body: JSON.stringify({ volume: volume })
+            });
+        });
+
+        function pollStatus() {
+            fetch('/api/autonomous_life/state').then(res => res.json()).then(data => {
+                updateLifeButton(data.state);
+            });
+            fetch('/api/posture/state').then(res => res.json()).then(data => {
+                updateSleepButton(data.is_awake);
+            });
+            fetch('/api/volume/state').then(res => res.json()).then(data => {
+                volumeSlider.value = data.volume;
+            });
+            fetch('/api/system/info').then(res => res.json()).then(data => {
+                naoqiVersion.textContent = data.naoqi_version;
+                ipAddresses.textContent = data.ip_addresses.join(', ');
+                internetStatus.textContent = data.internet_connected ? 'OUI' : 'NON';
+                internetStatus.className = 'internet-status ' + (data.internet_connected ? 'on' : 'off');
+            });
+        }
+
+        setInterval(pollStatus, 1000);
+        pollStatus();
+
+        var _poll = null;
+        function startPngPolling(){
+        var img = document.getElementById('cam');
+        var vid = document.getElementById('camvid');
+        var ph  = document.getElementById('cam-ph');
+        var st  = document.getElementById('cam-status');
+
+        vid.style.display='none'; vid.removeAttribute('src');
+        img.style.display='block';
+        ph.style.display='none';
+        st.textContent = 'PNG';
+
+        function tick(){
+            img.src = "http://198.18.0.1:8088/cam.png?ts=" + Date.now();
+        }
+        if (_poll) clearInterval(_poll);
+        tick();
+        _poll = setInterval(tick, 200); // ~5 fps
+        }
+    </script>
+    </body>
+    </html>
