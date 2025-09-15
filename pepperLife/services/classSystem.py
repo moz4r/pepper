@@ -1,5 +1,5 @@
 # -*- coding: utf-8 -*-
-# classColor.py — Couleurs pour la console
+# classSystem.py — Couleurs pour la console et gestion de version
 import os
 import io
 

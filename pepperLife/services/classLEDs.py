@@ -2,12 +2,15 @@
 # classLEDs.py — gestion oreilles/yeux (listen=bleu, processing=violet, parler=blanc, idle=blanc)
 
 class PepperLEDs(object):
-    def __init__(self, session):
+    def __init__(self, session, logger):
         self.leds = session.service("ALLeds")
+        self.log = logger
 
     def _set(self, group, rgb, dur=0.08):
-        try: self.leds.fadeRGB(group, int(rgb), float(dur))
-        except: pass
+        try: 
+            self.leds.fadeRGB(group, int(rgb), float(dur))
+        except Exception as e:
+            self.log(f"[LEDs] Failed to set {group}: {e}", level='warning')
 
     # Oreilles (ON = il peut écouter)
     def ears_on(self):  self._set("LeftEarLeds", 0x0000FF); self._set("RightEarLeds", 0x0000FF)

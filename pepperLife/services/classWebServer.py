@@ -5,7 +5,8 @@ import threading
 import os
 import json
 import socket
-from classAudioUtils import avgabs
+import time
+from .classAudioUtils import avgabs
 
 try:
     from http.server import SimpleHTTPRequestHandler
@@ -86,6 +87,18 @@ class WebServer(object):
                     self.server._logger("Error in _send_503: %s" % e, level='error')
 
             def do_GET(self):
+                if self.path == "/api/heartbeat":
+                    try:
+                        if parent and hasattr(parent, 'update_heartbeat'):
+                            parent.update_heartbeat()
+                            self._send_json_response({"status": "ok"})
+                        else:
+                            self._send_503("Heartbeat callback not available.")
+                    except Exception as e:
+                        self.server._logger(f"Error processing heartbeat: {e}", level='error')
+                        self._send_503("Error processing heartbeat: %s" % e)
+                    return
+
                 if self.path == '/' or self.path.startswith('/index.html'):
                     try:
                         with open(os.path.join(self.server._root_dir, 'index.html'), 'r') as f:

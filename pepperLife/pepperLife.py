@@ -7,20 +7,9 @@
 # - TTS asynchrone: parle pendant que le robot bouge
 # - Vision unifiée: prompt configurable dans config.json (comme les moteurs)
 
-import sys, time, io, wave, os, atexit, random, json, base64
-from classRobotActions import PepperActions, MARKER_RE
-from classLEDs import PepperLEDs
-from classRobotBehavior import BehaviorManager
-from classListener import Listener
-from classSpeak import Speaker
-from classASRFilters import is_noise_utterance, is_recent_duplicate
-from classAudioUtils import avgabs
-from classSystem import bcolors
-from classTablet import classTablet
-from classSystem import version as SysVersion
-from classSTT import STT
-from classChat import Chat
-from classVision import Vision
+import sys, time, os, atexit, json
+
+from services.classSystem import bcolors
 
 CONFIG = {
     "log": { "verbosity": 2 }
@@ -50,13 +39,15 @@ def load_config():
 
     if not os.path.exists(config_path):
         log("Le fichier config.json n'existe pas, création à partir de config.json.default...", level='warning', color=bcolors.WARNING)
-        import shutil
-        shutil.copy(default_config_path, config_path)
+        with open(default_config_path, 'r', encoding='utf-8') as f:
+            default_config_content = f.read()
+        with open(config_path, 'w', encoding='utf-8') as f:
+            f.write(default_config_content)
 
-    with open(default_config_path, 'r') as f:
+    with open(default_config_path, 'r', encoding='utf-8') as f:
         default_config = json.load(f)
 
-    with open(config_path, 'r') as f:
+    with open(config_path, 'r', encoding='utf-8') as f:
         user_config = json.load(f)
 
     # Vérifier les clés manquantes (merge superficiel + sous-dictionnaires)
@@ -74,12 +65,95 @@ def load_config():
                     updated = True
 
     if updated:
-        with open(config_path, 'w') as f:
-            json.dump(user_config, f, indent=2)
+        with open(config_path, 'w', encoding='utf-8') as f:
+            json.dump(user_config, f, indent=2, ensure_ascii=False)
 
     CONFIG = user_config
 
+def install_requirements(packages_to_install):
+    import subprocess
+    
+    pip_executable = "/home/nao/.local/share/PackageManager/apps/python3nao/bin/pip3"
+    if not os.path.exists(pip_executable):
+        pip_executable = "pip" # Fallback for non-pepper env
+
+    for req in packages_to_install:
+        try:
+            log(f"Installation de {req}...", level='info')
+            subprocess.check_call([pip_executable, "install", req])
+        except subprocess.CalledProcessError as e:
+            log(f"Erreur lors de l'installation de {req}: {e}", level='error', color=bcolors.FAIL)
+            log("Veuillez installer manuellement les dépendances.", level='error', color=bcolors.FAIL)
+            sys.exit(1)
+        except Exception as e:
+            log(f"Une erreur inattendue est survenue lors de l'installation de {req}: {e}", level='error', color=bcolors.FAIL)
+            sys.exit(1)
+
+    log("Toutes les dépendances manquantes ont été installées.", level='info', color=bcolors.OKGREEN)
+    # Re-vérification après installation
+    try:
+        import pkg_resources
+        for req in packages_to_install:
+            pkg_resources.require(req)
+        log("Vérification des dépendances réussie après installation.", level='info', color=bcolors.OKGREEN)
+    except (pkg_resources.DistributionNotFound, pkg_resources.VersionConflict) as e:
+        log(f"Erreur de vérification après installation: {e}", level='error', color=bcolors.FAIL)
+        sys.exit(1)
+
+def check_requirements():
+    try:
+        import pkg_resources
+    except ImportError:
+        log("Le module 'pkg_resources' est introuvable. Tentative d'installation des dépendances...", level='warning', color=bcolors.WARNING)
+        script_dir = os.path.dirname(os.path.abspath(__file__))
+        requirements_path = os.path.join(script_dir, 'requirements.txt')
+        with open(requirements_path, 'r') as f:
+            requirements = [line.strip() for line in f if line.strip() and not line.startswith('#')]
+        install_requirements(requirements)
+        return
+
+    script_dir = os.path.dirname(os.path.abspath(__file__))
+    requirements_path = os.path.join(script_dir, 'requirements.txt')
+
+    if not os.path.exists(requirements_path):
+        log("Le fichier requirements.txt est introuvable.", level='warning', color=bcolors.WARNING)
+        return
+
+    with open(requirements_path, 'r') as f:
+        requirements = f.readlines()
+
+    missing_packages = []
+    for req in requirements:
+        req = req.strip()
+        if not req or req.startswith('#'):
+            continue
+        try:
+            pkg_resources.require(req)
+        except (pkg_resources.DistributionNotFound, pkg_resources.VersionConflict):
+            missing_packages.append(req)
+        except Exception as e:
+            log(f"Erreur lors de la vérification de {req}: {e}", level='error', color=bcolors.FAIL)
+
+    if missing_packages:
+        log("Certaines dépendances sont manquantes ou en conflit. Tentative d'installation...", level='warning', color=bcolors.WARNING)
+        install_requirements(missing_packages)
+
 def main():
+    check_requirements()
+    
+    from services.classLEDs import PepperLEDs
+    from services.classRobotBehavior import BehaviorManager
+    from services.classListener import Listener
+    from services.classSpeak import Speaker
+    from services.classASRFilters import is_noise_utterance, is_recent_duplicate
+    from services.classAudioUtils import avgabs
+
+    from services.classTablet import classTablet
+    from services.classSystem import version as SysVersion
+    from services.classSTT import STT
+    from services.classChat import Chat
+    from services.classVision import Vision
+    
     load_config()
 
     log("Lancement de pepperLife", level='info', color=bcolors.OKCYAN)
@@ -94,7 +168,6 @@ def main():
     MIN_UTT = CONFIG['audio']['min_utt']
     CALIB = CONFIG['audio']['calib']
     BLACKLIST_STRICT = set(CONFIG['asr_filters']['blacklist_strict'])
-    SPEAKING = {"on": False}
 
     s = None
     try:
@@ -106,6 +179,18 @@ def main():
 
         system_service = s.service("ALSystem")
         robot_version = system_service.systemVersion()
+        # Désactiver sorties autonomes ALDialog
+        try:
+            dialog = s.service("ALDialog")
+            try: dialog.setSolitaryMode(False)
+            except: pass
+            try: dialog.setSpeakingMovementEnabled(True)
+            except: pass
+            try: dialog.stopDialog()
+            except: pass
+        except Exception as e:
+            log("ALDialog non disponible: %s" % e, level='warning')
+
         log(f"Version de NAOqi: {robot_version}", level='info')
 
     except ImportError as e:
@@ -118,8 +203,8 @@ def main():
         else:
             raise Exception("Impossible de se connecter à un service NAOqi.")
 
-    leds = PepperLEDs(s)
-    cap = Listener(s, SPEAKING, CONFIG['audio'], _logger); atexit.register(cap.close)
+    leds = PepperLEDs(s, _logger)
+    cap = Listener(s, CONFIG['audio'], _logger); atexit.register(cap.close)
     
     def toggle_micro():
         is_enabled = cap.toggle_micro()
@@ -137,16 +222,14 @@ def main():
     )
     _tablet_ui.start(show=True)
 
-    acts = PepperActions(s)
-    beh  = BehaviorManager(s, default_speed=0.5)
-    beh.set_actions(acts)
+    beh  = BehaviorManager(s, _logger, default_speed=0.5)
     beh.boot()
 
     stt_service = STT(CONFIG)
     chat_service = Chat(CONFIG)
     vision_service = Vision(CONFIG, s, _logger)
-    tts  = s.service("ALTextToSpeech"); tts.setLanguage("French"); tts.setVolume(0.85)
-    speaker = Speaker(tts, leds, cap, SPEAKING, acts, beh)
+    tts  = s.service("ALTextToSpeech"); tts.setLanguage("French");
+    speaker = Speaker(tts, leds, cap, beh)
 
     api_key = CONFIG['openai'].get('api_key')
     if api_key:
@@ -197,12 +280,28 @@ def main():
 
     speaker.say_quick("Je suis réveillé !")
 
+
+    # --- Tracking / BasicAwareness au démarrage ---
+    try:
+        ba = s.service("ALBasicAwareness")
+        # Modes utiles : "Head", "BodyRotation", "WholeBody"
+        ba.setTrackingMode("Head")
+        # Niveaux possibles : "Unengaged", "SemiEngaged", "FullyEngaged"
+        ba.setEngagementMode("FullyEngaged")
+        # Active la détection (faces, sons, mouvement, toucher)
+        ba.startAwareness()
+        log("[BA] BasicAwareness démarré (tracking=Head, engagement=FullyEngaged)", level='info')
+    except Exception as e:
+        log("[BA] Impossible de démarrer BasicAwareness: %s" % e, level='warning')
+
+
+
     # Boucle: listen → record → STT → (vision ? chat) → TTS/Actions
     while True:
         # départ écoute
         started=False; since=None; t_wait=time.time()
         while time.time()-t_wait < 5.0:
-            if SPEAKING.get("on"):
+            if cap.is_speaking():
                 time.sleep(0.05)
                 continue
 
@@ -218,6 +317,9 @@ def main():
         if not started: continue
 
         if not cap.is_micro_enabled():
+            continue
+
+        if cap.is_speaking():
             continue
 
         # enregistrement + endpointing agressif
@@ -285,19 +387,14 @@ def main():
             hist.append(("user", txt)); hist = hist[-8:]
             leds.processing()
             rep = chat_service.chat(txt, hist[:-1]); log("[GPT] " + rep, level='info', color=bcolors.OKCYAN)
-            rep, _ = beh.apply_speed_markers(rep)
-            speaker.speak_and_actions_parallel(rep)
-            rep_clean = MARKER_RE.sub("", rep).strip()
-            hist.append(("assistant", rep_clean))
+            speaker.say_quick(rep)
+            hist.append(("assistant", rep))
             time.sleep(0.5)
 
         except Exception as e:
             log("[ERR] " + str(e), level='error', color=bcolors.FAIL)
             speaker.say_quick("Petit pépin réseau, on réessaie.")
 
-
-if __name__ == "__main__":
-    main()
 
 if __name__ == "__main__":
     main()

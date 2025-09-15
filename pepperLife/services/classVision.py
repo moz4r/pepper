@@ -4,7 +4,6 @@
 import base64
 import io
 import time
-import threading
 import png
 from openai import OpenAI
 
@@ -15,11 +14,10 @@ class Vision(object):
         self.log = logger
         self._client = None
         self.res = 2   # 1=QVGA, 2=VGA
-        self.color = 13
+        self.color = 11  # kRGBColorSpace
         self.fps = 5
         self.cam = None
         self.sub = None
-        self.lock = threading.Lock()
 
     def client(self):
         if self._client is None:
@@ -47,39 +45,30 @@ class Vision(object):
             pass
         self.sub = None
 
-    def get_frame_bgr(self):
+    def get_frame_rgb(self):
         if not self.cam or not self.sub:
             return (None, None, None)
         try:
             f = self.cam.getImageRemote(self.sub)
             w, h = int(f[0]), int(f[1])
-            buf = f[6]  # BGR bytes
+            buf = f[6]  # RGB bytes
             return (w, h, buf)
         except Exception as e:
-            self.log("[Cam] get_frame_bgr error: %s" % e)
+            self.log("[Cam] get_frame_rgb error: %s" % e)
             return (None, None, None)
 
     def get_png(self):
         """
-        Retourne un PNG (bytes) encodé en pur Python via PyPNG à partir d'un buffer BGR.
+        Retourne un PNG (bytes) encodé en pur Python via PyPNG à partir d'un buffer RGB.
         """
-        w, h, bgr = self.get_frame_bgr()
+        w, h, rgb_bytes = self.get_frame_rgb()
         if not w:
             return None
         out = io.BytesIO()
         wr = png.Writer(width=w, height=h, greyscale=False, alpha=False, compression=5)
-        # Convertit BGR -> RGB ligne par ligne (pur Python)
-        rowlen = w * 3
-        rows = []
-        for y in range(h):
-            row_bgr = bgr[y*rowlen : (y+1)*rowlen]
-            # BGR->RGB: swap par pixel
-            row_rgb = bytearray(rowlen)
-            for i in range(0, rowlen, 3):
-                row_rgb[i]   = row_bgr[i+2]  # R
-                row_rgb[i+1] = row_bgr[i+1]  # G
-                row_rgb[i+2] = row_bgr[i]    # B
-            rows.append(bytes(row_rgb))
+        # Convertit le buffer plat en une liste de lignes
+        row_len = w * 3
+        rows = [rgb_bytes[i:i+row_len] for i in range(0, len(rgb_bytes), row_len)]
         wr.write(out, rows)
         return out.getvalue()
 
@@ -110,13 +99,17 @@ class Vision(object):
             ]
         })
 
-        resp = self.client().chat.completions.create(
-            model=self.config['vision'].get('model', 'gpt-4o-mini'),
-            messages=msgs,
-            temperature=0.2,
-            max_tokens=120
-        )
-        return resp.choices[0].message.content.strip().replace("\n"," ").strip()
+        try:
+            resp = self.client().chat.completions.create(
+                model=self.config['vision'].get('model', 'gpt-4o-mini'),
+                messages=msgs,
+                temperature=0.2,
+                max_tokens=120
+            )
+            return resp.choices[0].message.content.replace("\n"," ").strip()
+        except Exception as e:
+            self.log(f"[Vision] OpenAI API error: {e}", level='error')
+            return "Désolé, je n'ai pas pu analyser l'image."
 
     def _utterance_triggers_vision(self, txt_lower):
         """Retourne True si l'énoncé déclenche une analyse vision.

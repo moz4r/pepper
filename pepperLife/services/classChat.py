@@ -18,7 +18,11 @@ class Chat(object):
         for role, content in hist:
             msgs.append({"role": role, "content": content})
         msgs.append({"role":"user","content":user_text})
-        resp = self.client().chat.completions.create(
-            model=self.config['openai']['chat_model'], messages=msgs, temperature=0.6, max_tokens=60
-        )
-        return resp.choices[0].message.content.strip().replace("\n"," ").strip()
+        try:
+            resp = self.client().chat.completions.create(
+                model=self.config['openai']['chat_model'], messages=msgs, temperature=0.6, max_tokens=60
+            )
+            return resp.choices[0].message.content.replace("\n"," ").strip()
+        except Exception as e:
+            # En cas d'erreur avec l'API, retourner un message d'erreur simple
+            return "Désolé, une erreur est survenue avec le service de chat."

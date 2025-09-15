@@ -1,8 +1,8 @@
 # -*- coding: utf-8 -*-
 # classListener.py — Wrapper ALAudioDevice (pré-roll + WAV mémoire)
 
-import time, io, wave, random
-from classAudioUtils import agc, trim_tail_silence
+import time, io, wave, random, threading
+from .classAudioUtils import agc, trim_tail_silence
 
 def _list_audio_clients(ad):
     try:
@@ -27,17 +27,30 @@ def _free_audio_slots(ad, prefixes=("PepperASR_", "SpeechRecognition", "ASR_", "
     return freed
 
 class Listener(object):
-    """Pré-roll + enregistrement + WAV mémoire, avec subscribe robuste.""" 
-    def __init__(self, s, speaking_flag, audio_config, logger):
+    """Pré-roll + enregistrement + WAV mémoire, avec subscribe robuste."""
+    def __init__(self, s, audio_config, logger):
         self.ad = s.service("ALAudioDevice")
         self.name = "PepperASR_%d_%d" % (int(time.time()), random.randint(100,999))
         s.registerService(self.name, self)
-        self.SPEAKING = speaking_flag
+
         self.sr = audio_config['sr']
         self.preroll_chunks = audio_config['preroll_chunks']
         self.agc_target = audio_config['agc_target']
         self.log = logger
         self.microEnabled = {"on": True}
+
+        # État partagé et synchronisation
+        self.lock = threading.Lock()
+        self.speaking = False
+        self.speech_stop_time = 0
+        self.speech_cooldown = 0.8 # 400ms
+
+        # Abonnement à l'état du TTS
+        self.memory = s.service("ALMemory")
+        self.tts_subscriber = self.memory.subscriber("ALTextToSpeech/Status")
+        self.anim_subscriber = self.memory.subscriber("ALAnimatedSpeech/Status")
+        self.anim_subscriber_id = self.anim_subscriber.signal.connect(self.on_tts_status)
+        self.tts_subscriber_id = self.tts_subscriber.signal.connect(self.on_tts_status)
 
         freed = _free_audio_slots(self.ad)
         if freed:
@@ -60,6 +73,18 @@ class Listener(object):
         self.maxpre = self.preroll_chunks
         print("[AUDIO] %dk mono — %s" % (self.sr//1000, self.name))
 
+    def on_tts_status(self, status):
+        if not isinstance(status, (list, tuple)) or len(status) < 2:
+            return
+
+        status_string = status[1]
+        with self.lock:
+            if status_string == 'started':
+                self.speaking = True
+            elif status_string == 'done':
+                self.speaking = False
+                self.speech_stop_time = time.time()
+
     def toggle_micro(self):
         self.microEnabled["on"] = not self.microEnabled["on"]
         self.log(f"Microphone enabled: {self.microEnabled['on']}", level='info')
@@ -67,6 +92,10 @@ class Listener(object):
 
     def is_micro_enabled(self):
         return self.microEnabled.get("on", False)
+
+    def is_speaking(self):
+        with self.lock:
+            return self.speaking
 
     def warmup(self, min_chunks=6, timeout=1.5):
         t0 = time.time()
@@ -81,8 +110,13 @@ class Listener(object):
             try: buf = bytes(buf)
             except: return
 
-        if self.SPEAKING["on"] or not self.microEnabled["on"]:
-            # NE PAS couper complètement: on entretient un petit ring pour le VAD
+        with self.lock:
+            is_speaking = self.speaking
+            stop_time = self.speech_stop_time
+
+        time_since_stop = time.time() - stop_time
+
+        if is_speaking or (time_since_stop < self.speech_cooldown) or not self.microEnabled["on"]:
             self.mon.append(buf)
             if len(self.mon) > 24:
                 self.mon = self.mon[-24:]
@@ -93,7 +127,6 @@ class Listener(object):
         if len(self.mon) > 24: self.mon = self.mon[-24:]
         if len(self.pre) > self.maxpre: self.pre = self.pre[-self.maxpre:]
         if self.on: self.rec.append(buf)
-
 
     def start(self):
         self.rec = list(self.pre)
@@ -116,5 +149,16 @@ class Listener(object):
         return buf.getvalue()
 
     def close(self):
+        try:
+            self.tts_subscriber.signal.disconnect(self.tts_subscriber_id)
+        except Exception:
+            pass
         try: self.ad.unsubscribe(self.name)
         except Exception: pass
+
+        # Bool direct (si dispo)
+        try:
+            self.isspk_sub = self.memory.subscriber("ALTextToSpeech/IsSpeaking")
+            self.isspk_sub_id = self.isspk_sub.signal.connect(lambda v: self._set_speaking(bool(v)))
+        except Exception:
+            self.isspk_sub = None; self.isspk_sub_id = None

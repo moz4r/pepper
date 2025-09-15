@@ -246,6 +246,11 @@
         tick();
         _poll = setInterval(tick, 200); // ~5 fps
         }
+
+        // Heartbeat via API
+        setInterval(function() {
+            fetch("/api/heartbeat").catch(err => log("Heartbeat failed: " + err));
+        }, 10000); // Toutes les 10 secondes
     </script>
     </body>
     </html>

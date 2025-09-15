@@ -3,9 +3,8 @@
 from __future__ import print_function
 import os, io, atexit, threading
 import time
-import struct
 
-from classWebServer import WebServer
+from .classWebServer import WebServer
 
 class classTablet(object):
     """
@@ -27,17 +26,29 @@ class classTablet(object):
         self.version_text = self._resolve_version(version_text)
 
         self.script_dir = os.path.dirname(os.path.abspath(__file__))
-        self.ui_dir = os.path.join(self.script_dir, "gui")
+        self.ui_dir = os.path.join(os.path.dirname(self.script_dir), "gui")
         self.web_server = WebServer(logger=self._log, ui_dir=self.ui_dir, port=self.port, mic_toggle_callback=self.mic_toggle_callback, session=self.session, listener=self.listener)
         self.port = self.web_server.port
         self.tablet = None
         self.last_capture = None
         self._ensure_ui_files()
 
+        self.al_memory = None
+        self.heartbeat_key = "webview/alive"
+
+        self.keep_showing = False
+        self.show_thread = None
+
+        # Suivi local (évite les refresh intempestifs si ALMemory mal typé)
+        self._last_hb_local = 0.0  # epoch seconds
+        self._last_show_ts = 0.0   # dernier show() effectif
+
         # Récupère ALTabletService si possible
         try:
             if self.session:
                 self.tablet = self.session.service("ALTabletService")
+                self.al_memory = self.session.service("ALMemory")
+                self.al_memory.insertData(self.heartbeat_key, 0.0)
         except Exception as e:
             self._log("[Tablet] ALTabletService indisponible: %s" % e)
 
@@ -55,7 +66,10 @@ class classTablet(object):
             self.tablet.wakeUp()
             self.tablet.turnScreenOn(True)
         if show:
-            self.show()
+            self.keep_showing = True
+            self.show_thread = threading.Thread(target=self._keep_showing_loop)
+            self.show_thread.daemon = True
+            self.show_thread.start()
         return self.get_url()
 
 
@@ -81,6 +95,9 @@ class classTablet(object):
 
     def stop(self):
         """Arrête proprement: cache la webview + coupe le serveur HTTP."""
+        self.keep_showing = False
+        if self.show_thread:
+            self.show_thread.join()
         self.hide()
         if self.web_server:
             self.web_server.stop()
@@ -111,6 +128,58 @@ class classTablet(object):
             self.tablet.executeJS("startPngPolling()")
         except Exception as e:
             self._log("[Tablet] Échec executeJS(startPngPolling): %s" % e)
+
+    def update_heartbeat(self, ts=None):
+        """Mise à jour du heartbeat depuis la page web (WebServer).
+        - ts: epoch seconds (float/int). Si None, on utilise time.time().
+        Met à jour ALMemory *et* un cache local fiable pour éviter les problèmes de type (str/bool).
+        """
+        try:
+            now = float(ts) if ts is not None else time.time()
+        except Exception:
+            now = time.time()
+        self._last_hb_local = now
+        if self.al_memory:
+            try:
+                # Enregistre un float epoch; compatible avec la comparaison time.time() - value
+                self.al_memory.insertData(self.heartbeat_key, float(now))
+                self._log("Updating heartbeat key '%s'" % self.heartbeat_key)
+            except Exception as e:
+                self._log("[Tablet] insertData heartbeat KO: %s" % e, level='warning')
+        self._log("Heartbeat received. Parent is: %r" % self, level='debug')
+
+    def _keep_showing_loop(self):
+        # Paramètres anti-refresh
+        heartbeat_timeout = 45.0   # avant: 25s (trop court si tablette en veille légère)
+        min_show_interval = 90.0   # ne jamais réafficher plus souvent que toutes les 90s
+        while self.keep_showing:
+            try:
+                now = time.time()
+                last_hb_mem = None
+                if self.al_memory:
+                    try:
+                        val = self.al_memory.getData(self.heartbeat_key)
+                        # Convertit proprement en float epoch si possible
+                        if isinstance(val, (int, float)):
+                            last_hb_mem = float(val)
+                        elif isinstance(val, (str, bytes)):
+                            try:
+                                last_hb_mem = float(val)
+                            except Exception:
+                                last_hb_mem = None
+                    except Exception:
+                        last_hb_mem = None
+                # Utilise le meilleur des deux (ALMemory ou cache local)
+                last_hb = last_hb_mem if (last_hb_mem is not None) else self._last_hb_local
+                age = (now - last_hb) if (last_hb > 0) else 1e9
+                since_last_show = now - self._last_show_ts
+                if age > heartbeat_timeout and since_last_show > min_show_interval:
+                    self._log("[Tablet] Heartbeat trop vieux (%.1fs), réaffichage webview." % age, level='debug')
+                    self.show()
+                    self._last_show_ts = now
+            except Exception as e:
+                self._log("[Tablet] Erreur dans _keep_showing_loop: %s" % e, level='error')
+            time.sleep(10)  # Vérification toutes les 10s
 
     # ---------- Internes ----------
     def _resolve_version(self, default_text):
