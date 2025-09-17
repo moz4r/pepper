@@ -9,11 +9,14 @@
 
 import sys, time, os, atexit, json
 
-from services.classSystem import bcolors
+from services.classSystem import bcolors, build_system_prompt_in_memory
+from services.classAnimation import Animation
+
 
 CONFIG = {
     "log": { "verbosity": 2 }
 }
+
 
 def log(msg, level='info', color=None):
     verbosity_map = {'error': 0, 'warning': 1, 'info': 2, 'debug': 3}
@@ -24,11 +27,13 @@ def log(msg, level='info', color=None):
         else:
             print(msg)
 
+
 def _logger(msg, **kwargs):
     try:
         log(msg, **kwargs)
     except Exception:
         print(msg)
+
 
 def load_config():
     global CONFIG
@@ -70,12 +75,19 @@ def load_config():
 
     CONFIG = user_config
 
+
+APP_DIR = os.path.dirname(os.path.abspath(__file__))
+
+
+
+
+
 def install_requirements(packages_to_install):
     import subprocess
-    
+
     pip_executable = "/home/nao/.local/share/PackageManager/apps/python3nao/bin/pip3"
     if not os.path.exists(pip_executable):
-        pip_executable = "pip" # Fallback for non-pepper env
+        pip_executable = "pip"  # Fallback for non-pepper env
 
     for req in packages_to_install:
         try:
@@ -99,6 +111,7 @@ def install_requirements(packages_to_install):
     except (pkg_resources.DistributionNotFound, pkg_resources.VersionConflict) as e:
         log(f"Erreur de vérification après installation: {e}", level='error', color=bcolors.FAIL)
         sys.exit(1)
+
 
 def check_requirements():
     try:
@@ -138,9 +151,13 @@ def check_requirements():
         log("Certaines dépendances sont manquantes ou en conflit. Tentative d'installation...", level='warning', color=bcolors.WARNING)
         install_requirements(missing_packages)
 
+
+
+
+
 def main():
     check_requirements()
-    
+
     from services.classLEDs import PepperLEDs
     from services.classRobotBehavior import BehaviorManager
     from services.classListener import Listener
@@ -153,16 +170,20 @@ def main():
     from services.classSTT import STT
     from services.classChat import Chat
     from services.classVision import Vision
-    
+
     load_config()
 
-    log("Lancement de pepperLife", level='info', color=bcolors.OKCYAN)
+    log(r"""
+   .----.
+  /      \
+ |  () () |   PepperLife
+  \   -  /    ==========
+    """, level='info', color=bcolors.OKCYAN)
 
     IP = CONFIG['connection']['ip']
     PORT = CONFIG['connection']['port']
     STT_MODEL = CONFIG['openai']['stt_model']
     CHAT_MODEL = CONFIG['openai']['chat_model']
-    SYSTEM_PROMPT = CONFIG['openai']['system_prompt']
     SILHOLD = CONFIG['audio']['silhold']
     FAST_FRAMES = CONFIG['audio']['fast_frames']
     MIN_UTT = CONFIG['audio']['min_utt']
@@ -182,12 +203,18 @@ def main():
         # Désactiver sorties autonomes ALDialog
         try:
             dialog = s.service("ALDialog")
-            try: dialog.setSolitaryMode(False)
-            except: pass
-            try: dialog.setSpeakingMovementEnabled(True)
-            except: pass
-            try: dialog.stopDialog()
-            except: pass
+            try:
+                dialog.setSolitaryMode(False)
+            except:
+                pass
+            try:
+                dialog.setSpeakingMovementEnabled(True)
+            except:
+                pass
+            try:
+                dialog.stopDialog()
+            except:
+                pass
         except Exception as e:
             log("ALDialog non disponible: %s" % e, level='warning')
 
@@ -203,9 +230,21 @@ def main():
         else:
             raise Exception("Impossible de se connecter à un service NAOqi.")
 
+    # --- Prompt dynamique (en mémoire, sans fichiers) ---------------------------
+    try:
+        base_prompt = Chat.load_system_prompt(CONFIG.get('openai', {}), APP_DIR)
+        prompt_text, n_animations = build_system_prompt_in_memory(base_prompt, robot_version)
+        # JAUNE : "X animations chargées" — log déjà émis par classAnimation.refresh()
+        # log(f"{n_animations} animations chargées", level='info', color=bcolors.WARNING)
+        SYSTEM_PROMPT = prompt_text
+    except Exception as e:
+        log(f"[PROMPT] Génération dynamique échouée: {e}", level='warning', color=bcolors.WARNING)
+        SYSTEM_PROMPT = Chat.load_system_prompt(CONFIG.get('openai', {}), APP_DIR)  # fallback existant
+
     leds = PepperLEDs(s, _logger)
-    cap = Listener(s, CONFIG['audio'], _logger); atexit.register(cap.close)
-    
+    cap = Listener(s, CONFIG['audio'], _logger)
+    atexit.register(cap.close)
+
     def toggle_micro():
         is_enabled = cap.toggle_micro()
         if not is_enabled:
@@ -222,14 +261,16 @@ def main():
     )
     _tablet_ui.start(show=True)
 
-    beh  = BehaviorManager(s, _logger, default_speed=0.5)
+    beh = BehaviorManager(s, _logger, default_speed=0.5)
     beh.boot()
 
     stt_service = STT(CONFIG)
-    chat_service = Chat(CONFIG)
+    chat_service = Chat(CONFIG, system_prompt=SYSTEM_PROMPT)
     vision_service = Vision(CONFIG, s, _logger)
-    tts  = s.service("ALTextToSpeech"); tts.setLanguage("French");
-    speaker = Speaker(tts, leds, cap, beh)
+    tts = s.service("ALAnimatedSpeech")
+    anim = Animation(s, log, robot_version=robot_version)
+    anim.health_check()  # ne double pas le log "X animations chargées"
+    speaker = Speaker(tts, leds, cap, beh, anim=anim)
 
     api_key = CONFIG['openai'].get('api_key')
     if api_key:
@@ -237,7 +278,8 @@ def main():
 
     if not os.getenv("OPENAI_API_KEY"):
         log("Clé OpenAI absente. Veuillez la définir dans config.json ou via la variable d'environnement OPENAI_API_KEY.", level='error', color=bcolors.FAIL)
-        tts.say("Clé OpenAI absente."); return
+        tts.say("Clé OpenAI absente.")
+        return
 
     leds.idle()
 
@@ -252,14 +294,16 @@ def main():
 
     # Calibration bruit
     log("Calibration du bruit...", level='info')
-    t0 = time.time(); vals=[]
+    t0 = time.time(); vals = []
     while time.time() - t0 < CALIB:
         time.sleep(0.04)
         vals.append(avgabs(b"".join(cap.mon[-8:]) if cap.mon else b""))
-    base  = int(sum(vals)/max(1,len(vals)))
-    START = max(4, int(base*1.6))
-    STOP  = max(3, int(base*0.9))
-    log("[VAD] base=%d START=%d STOP=%d"%(base,START,STOP), level='debug')
+    base = int(sum(vals) / max(1, len(vals)))
+    START = max(4, int(base * 2.2))
+    STOP = max(3, int(base * 1.2))
+    log("[VAD] base=%d START=%d STOP=%d" % (base, START, STOP), level='debug')
+
+    time.sleep(0.5)
 
     # Boot options
     if CONFIG.get('boot', {}).get('boot_vieAutonome', True):
@@ -280,7 +324,6 @@ def main():
 
     speaker.say_quick("Je suis réveillé !")
 
-
     # --- Tracking / BasicAwareness au démarrage ---
     try:
         ba = s.service("ALBasicAwareness")
@@ -294,13 +337,13 @@ def main():
     except Exception as e:
         log("[BA] Impossible de démarrer BasicAwareness: %s" % e, level='warning')
 
-
-
     # Boucle: listen → record → STT → (vision ? chat) → TTS/Actions
     while True:
         # départ écoute
-        started=False; since=None; t_wait=time.time()
-        while time.time()-t_wait < 5.0:
+        started = False
+        since = None
+        t_wait = time.time()
+        while time.time() - t_wait < 5.0:
             if cap.is_speaking():
                 time.sleep(0.05)
                 continue
@@ -309,12 +352,14 @@ def main():
             if vol >= START:
                 if since is None:
                     since = time.time()
-                elif time.time()-since >= 0.06:
-                    started=True; break
+                elif time.time() - since >= 0.15:
+                    started = True
+                    break
             else:
-                since=None
+                since = None
             time.sleep(0.03)
-        if not started: continue
+        if not started:
+            continue
 
         if not cap.is_micro_enabled():
             continue
@@ -323,24 +368,30 @@ def main():
             continue
 
         # enregistrement + endpointing agressif
-        cap.start(); t0=time.time(); last=t0; low=0
+        cap.start(); t0 = time.time(); last = t0; low = 0
         leds.listening_recording()
-        while time.time()-t0 < 3.0:
+        while time.time() - t0 < 3.0:
             recent = b"".join(cap.mon[-3:]) if cap.mon else b""
-            fr = recent[-320:] if len(recent)>=320 else recent
+            fr = recent[-320:] if len(recent) >= 320 else recent
             e = avgabs(fr)
-            if e >= STOP: last=time.time(); low=0
-            else: low+=1
-            if time.time()-last >= SILHOLD: break
-            if low >= FAST_FRAMES and time.time()-t0 >= MIN_UTT: break
+            if e >= STOP:
+                last = time.time(); low = 0
+            else:
+                low += 1
+            if time.time() - last >= SILHOLD:
+                break
+            if low >= FAST_FRAMES and time.time() - t0 >= MIN_UTT:
+                break
             time.sleep(0.01)
 
         wav = cap.stop(STOP)
-        if not wav: continue
+        if not wav:
+            continue
 
-        # STT -> Routeur (vision/chat) -> parler & bouger
+        # STT -> Routeur (vision ? chat) -> parler & bouger
         try:
-            txt = stt_service.stt(wav); log("[ASR] " + str(txt), level='info')
+            txt = stt_service.stt(wav)
+            log("[ASR] " + str(txt), level='info')
             if not txt:
                 continue
 
@@ -386,7 +437,8 @@ def main():
             # ----- Chat texte standard -----
             hist.append(("user", txt)); hist = hist[-8:]
             leds.processing()
-            rep = chat_service.chat(txt, hist[:-1]); log("[GPT] " + rep, level='info', color=bcolors.OKCYAN)
+            rep = chat_service.chat(txt, hist[:-1])
+            log("[GPT] " + rep, level='info', color=bcolors.OKCYAN)
             speaker.say_quick(rep)
             hist.append(("assistant", rep))
             time.sleep(0.5)

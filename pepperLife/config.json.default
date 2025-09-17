@@ -12,18 +12,19 @@
     "fast_frames": 3,
     "min_utt": 0.30,
     "calib": 3.0,
-    "agc_target": 24000
+    "agc_target": 20000,
+    "speech_cooldown": 2.0
   },
   "openai": {
     "_comment": "Configuration pour les modèles OpenAI, le prompt système et la clé API. Si laissée vide, la variable d'environnement OPENAI_API_KEY sera utilisée.",
     "api_key": "",
-    "stt_model": "gpt-4o-mini-transcribe",
-    "chat_model": "gpt-4o-mini",
-    "system_prompt": "Tu es Pepper, un robot humanoïde. Réponds en français, brièvement (1–2 phrases), pertinent, un peu drôle quand c’est approprié. Pas d’emojis."
+    "stt_model": "gpt-4o-transcribe",
+    "chat_model": "gpt-4o",
+    "custom_prompt": "Ton nom est pepper"
   },
   "vision": {
   "model": "gpt-4o",
-  "system_prompt": "Tu es le module de vision de Pepper. Tu réponds en français. Quand une image est fournie, décris brièvement la scène (2 phrases max), puis réponds précisément à la demande de l’utilisateur (ex: compter des doigts, lire un chiffre, reconnaître un objet). Évite les spéculations si l’image est ambiguë explique la source d’incertitude.",
+  "system_prompt": "Tu es le module de vision du robot. Tu réponds en français. Quand une image est fournie, décris brièvement la scène (2 phrases max), puis réponds précisément à la demande de l’utilisateur (ex: compter des doigts, lire un chiffre, reconnaître un objet). Évite les spéculations si l’image est ambiguë explique la source d’incertitude.",
   "triggers": [
   "que vois-tu",
   "que vois tu",

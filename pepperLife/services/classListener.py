@@ -43,7 +43,7 @@ class Listener(object):
         self.lock = threading.Lock()
         self.speaking = False
         self.speech_stop_time = 0
-        self.speech_cooldown = 0.8 # 400ms
+        self.speech_cooldown = audio_config.get('speech_cooldown', 2.0)
 
         # Abonnement à l'état du TTS
         self.memory = s.service("ALMemory")
@@ -76,14 +76,19 @@ class Listener(object):
     def on_tts_status(self, status):
         if not isinstance(status, (list, tuple)) or len(status) < 2:
             return
-
         status_string = status[1]
         with self.lock:
             if status_string == 'started':
                 self.speaking = True
+                # purge anti-larsen (sécurise)
+                self.mon[:] = []
+                self.pre[:] = []
             elif status_string == 'done':
                 self.speaking = False
                 self.speech_stop_time = time.time()
+                # IMPORTANT : re-semence du pré-roll avec le “ring buffer” récent
+                self.pre = list(self.mon[-self.maxpre:])
+
 
     def toggle_micro(self):
         self.microEnabled["on"] = not self.microEnabled["on"]
@@ -117,9 +122,6 @@ class Listener(object):
         time_since_stop = time.time() - stop_time
 
         if is_speaking or (time_since_stop < self.speech_cooldown) or not self.microEnabled["on"]:
-            self.mon.append(buf)
-            if len(self.mon) > 24:
-                self.mon = self.mon[-24:]
             return
 
         # Idle/écoute active

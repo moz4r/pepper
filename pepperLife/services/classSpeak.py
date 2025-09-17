@@ -4,14 +4,19 @@
 import time
 
 class Speaker(object):
-    def __init__(self, tts, leds, listener, beh):
+    def __init__(self, tts, leds, listener, beh, anim=None):
         self.tts = tts
         self.leds = leds
         self.cap = listener
         self.beh = beh
+        self.anim = anim
 
     def _say_async(self, text):
         self.leds.speaking_start()
+        try: self.cap.microEnabled["on"] = False
+        except: pass
+        with self.cap.lock:
+            self.cap.speaking = True
         try:
             try:
                 self.cap.mon[:] = []; self.cap.pre[:] = []  # anti-larsen soft
@@ -58,13 +63,26 @@ class Speaker(object):
             # Fallback très simple si .post ne retourne pas de future
             time.sleep(0.5)
 
+        try: self.cap.microEnabled["on"] = True
+        except: pass
+
         try:
             self.leds.speaking_stop()   # oreilles ON, yeux blancs
         except:
             pass
-        time.sleep(0.06)
 
-    def say_quick(self, text):
-        """Helper pour un TTS bref (non-bloquant si possible, sinon bloquant)."""
+
+    def _prep_text(self, text, intent=None):
+        if self.anim:
+            try:
+                return self.anim.normalize_text(text, intent=intent)
+            except Exception as e:
+                self.beh.log("[ANIM] normalize err: %s" % e, level='warning')
+        # fallback: strip les balises si AnimatedSpeech indispo
+        import re
+        return re.sub(r'\^(start|wait)\([^)]+\)', '', text, flags=re.IGNORECASE)
+
+    def say_quick(self, text, intent=None):
+        text = self._prep_text(text, intent=intent)
         h = self._say_async(text)
         self._wait_tts_end(h, timeout=15.0)

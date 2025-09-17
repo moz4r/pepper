@@ -143,7 +143,7 @@ class classTablet(object):
             try:
                 # Enregistre un float epoch; compatible avec la comparaison time.time() - value
                 self.al_memory.insertData(self.heartbeat_key, float(now))
-                self._log("Updating heartbeat key '%s'" % self.heartbeat_key)
+                self._log("Updating heartbeat key '%s'" % self.heartbeat_key, level='debug')
             except Exception as e:
                 self._log("[Tablet] insertData heartbeat KO: %s" % e, level='warning')
         self._log("Heartbeat received. Parent is: %r" % self, level='debug')
