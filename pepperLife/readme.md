@@ -1,4 +1,4 @@
-# PepperLife 0.0.4
+# PepperLife 0.4
 
 ![pepperlife_edited](https://github.com/user-attachments/assets/fba8f19b-ef94-4246-bdc5-7bd2d5027dfb)
 
@@ -12,7 +12,7 @@ Pipeline léger **NAOqi + OpenAI** pour **Pepper** :
 - 🕺 **Gestion dynamique des animations** : le LLM peut déclencher des animations (`^start(...)`) parmi un catalogue généré automatiquement au démarrage.
 - 🔇 Anti-larsen & anti-bruit (blacklist + heuristiques)
 - 🧩 Architecture par classes normalisées : `classLEDs.py`, `classAnimation.py`, `classRobotBehavior.py`
-- ✔️ Version actuelle : **0.0.4**
+- ✔️ Version actuelle : **0.4**
 
 ---
 
