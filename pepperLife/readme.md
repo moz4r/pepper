@@ -33,12 +33,11 @@ amixer sset Capture 100%
 
 **Chemin recommandé** : `/home/nao/pepperLife`
 
-### 1) Cloner le dépôt
-```bash
-# Sur Pepper OU sur PC
-git clone https://github.com/moz4r/pepper.git
+### 1) Téléchargez le zip et l'extraire suer le robot
 cd pepper/pepperLife
-/home/nao/.local/share/PackageManager/apps/python3nao/bin/python3 -m pip install openai
+facultatif si les dépendances ne s installent pas : 
+/home/nao/.local/share/PackageManager/apps/python3nao/bin/runpy3.sh -m pip install --upgrade pip
+/home/nao/.local/share/PackageManager/apps/python3nao/bin/runpy3.sh -m pip install openai
 ```
 
 ### Configuration
