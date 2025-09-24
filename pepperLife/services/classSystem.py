@@ -28,55 +28,17 @@ class version(object):
             pass
         return default
 
-# --- Prompt dynamique (2.9 vs 2.7) -------------------------------------------
-import re
-from pathlib import Path
+# --- Prompt dynamique --------------------------------------------------
 
-def _version_tuple(ver_str):
-    try:
-        return tuple(int(x) for x in re.findall(r"\d+", ver_str)[:4]) or (0,0,0,0)
-    except Exception:
-        return (0,0,0,0)
-
-def _scan_qianim_for_29():
-    base = Path.home() / ".local/share/PackageManager/apps/animations"
-    if not base.is_dir():
-        return []
-    keys = []
-    for p in base.rglob("*.qianim"):
-        rel = p.relative_to(base).as_posix()  # => Stand/.../Name_01.qianim
-        keys.append(rel)
-    return sorted(set(keys))
-
-def _scan_keys_for_27():
+def build_system_prompt_in_memory(base_text, animation_instance):
     """
-    2.7 : renvoie des *clés* de répertoires avec préfixe animations/
-    ex: animations/Stand/BodyTalk/Speaking/BodyTalk_13
-    (un dossier est retenu s'il contient au moins un .qianim)
-    """
-    base = Path.home() / ".local/share/PackageManager/apps/animations"
-    if not base.is_dir():
-        return []
-    out = set()
-    for d in base.rglob("*"):
-        if d.is_dir():
-            try:
-                if any(x.suffix == ".qianim" for x in d.iterdir()):
-                    out.add(d.relative_to(Path.home() / ".local/share/PackageManager/apps/animation").as_posix())
-            except Exception:
-                pass
-    return sorted(out)
-
-def build_system_prompt_in_memory(base_text, robot_version_str):
-    """
-    Prend un texte de base, détecte 2.9 vs 2.7, scanne le bon format,
+    Prend un texte de base, récupère le catalogue d'animations via l'instance,
     et renvoie (prompt, count).
     """
     if not base_text:
         base_text = "CATALOGUE DES ANIMATIONS DISPONIBLES (utilise ces clés telles quelles)\n{{CATALOGUE_AUTO}}"
 
-    is_29 = _version_tuple(robot_version_str) >= (2,9,0,0)
-    lines = _scan_qianim_for_29() if is_29 else _scan_keys_for_27()
+    lines = animation_instance.get_installed_animations() if animation_instance else []
     catalogue = "\n".join(lines)
 
     if "{{CATALOGUE_AUTO}}" in base_text:

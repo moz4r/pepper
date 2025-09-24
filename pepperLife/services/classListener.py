@@ -33,8 +33,8 @@ class Listener(object):
         self.name = "PepperASR_%d_%d" % (int(time.time()), random.randint(100,999))
         s.registerService(self.name, self)
 
-        self.sr = audio_config['sr']
-        self.preroll_chunks = audio_config['preroll_chunks']
+        self.sr = 16000  # Fréquence d'échantillonnage
+        self.preroll_chunks = audio_config.get('preroll_chunks', 16)
         self.agc_target = audio_config['agc_target']
         self.log = logger
         self.microEnabled = {"on": True}

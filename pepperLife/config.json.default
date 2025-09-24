@@ -6,12 +6,11 @@
   },
   "audio": {
     "_comment": "Configuration pour le traitement audio et la détection de la parole (VAD).",
-    "sr": 16000,
+    "_comment_vad": "vad_level (1-5) contrôle la sensibilité de la détection vocale (1=très sensible, 5=peu sensible). override_base_sensitivity, s'il est défini, remplace la calibration automatique du bruit.",
+    "vad_level": 3,
+    "override_base_sensitivity": null,
+    "_comment_preroll": "Nb de chunks audio (10ms chacun) gardés en mémoire avant le début de la parole. Augmenter si le début des phrases est coupé.",
     "preroll_chunks": 16,
-    "silhold": 0.30,
-    "fast_frames": 3,
-    "min_utt": 0.30,
-    "calib": 3.0,
     "agc_target": 20000,
     "speech_cooldown": 2.0
   },

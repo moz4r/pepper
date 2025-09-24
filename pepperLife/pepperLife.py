@@ -184,11 +184,19 @@ def main():
     PORT = CONFIG['connection']['port']
     STT_MODEL = CONFIG['openai']['stt_model']
     CHAT_MODEL = CONFIG['openai']['chat_model']
-    SILHOLD = CONFIG['audio']['silhold']
-    FAST_FRAMES = CONFIG['audio']['fast_frames']
-    MIN_UTT = CONFIG['audio']['min_utt']
-    CALIB = CONFIG['audio']['calib']
     BLACKLIST_STRICT = set(CONFIG['asr_filters']['blacklist_strict'])
+
+    # --- VAD Profiles --- 
+    VAD_PROFILES = {
+        # level: (start_multiplier, stop_multiplier, silhold)
+        1: (1.3, 1.05, 0.8), # Très sensible
+        2: (1.6, 1.1, 0.6),
+        3: (2.0, 1.2, 0.5),  # Normal (défaut)
+        4: (2.5, 1.3, 0.4),
+        5: (3.0, 1.5, 0.3)   # Peu sensible
+    }
+    vad_level = CONFIG['audio'].get('vad_level', 3)
+    start_mult, stop_mult, SILHOLD = VAD_PROFILES.get(vad_level, VAD_PROFILES[3])
 
     s = None
     try:
@@ -230,12 +238,14 @@ def main():
         else:
             raise Exception("Impossible de se connecter à un service NAOqi.")
 
-    # --- Prompt dynamique (en mémoire, sans fichiers) ---------------------------
+    # --- Initialisation de l'animation (avant le prompt) --------------------
+    anim = Animation(s, log, robot_version=robot_version)
+    anim.health_check()  # Log "X animations chargées"
+
+    # --- Prompt dynamique (en mémoire, sans fichiers) --------------------------
     try:
         base_prompt = Chat.load_system_prompt(CONFIG.get('openai', {}), APP_DIR)
-        prompt_text, n_animations = build_system_prompt_in_memory(base_prompt, robot_version)
-        # JAUNE : "X animations chargées" — log déjà émis par classAnimation.refresh()
-        # log(f"{n_animations} animations chargées", level='info', color=bcolors.WARNING)
+        prompt_text, n_animations = build_system_prompt_in_memory(base_prompt, anim)
         SYSTEM_PROMPT = prompt_text
     except Exception as e:
         log(f"[PROMPT] Génération dynamique échouée: {e}", level='warning', color=bcolors.WARNING)
@@ -268,8 +278,6 @@ def main():
     chat_service = Chat(CONFIG, system_prompt=SYSTEM_PROMPT)
     vision_service = Vision(CONFIG, s, _logger)
     tts = s.service("ALAnimatedSpeech")
-    anim = Animation(s, log, robot_version=robot_version)
-    anim.health_check()  # ne double pas le log "X animations chargées"
     speaker = Speaker(tts, leds, cap, beh, anim=anim)
 
     api_key = CONFIG['openai'].get('api_key')
@@ -292,16 +300,22 @@ def main():
     hist = []            # historique chat texte
     hist_vision = []     # historique dédié à la vision (optionnel)
 
-    # Calibration bruit
-    log("Calibration du bruit...", level='info')
-    t0 = time.time(); vals = []
-    while time.time() - t0 < CALIB:
-        time.sleep(0.04)
-        vals.append(avgabs(b"".join(cap.mon[-8:]) if cap.mon else b""))
-    base = int(sum(vals) / max(1, len(vals)))
-    START = max(4, int(base * 2.2))
-    STOP = max(3, int(base * 1.2))
-    log("[VAD] base=%d START=%d STOP=%d" % (base, START, STOP), level='debug')
+    # Calibration bruit ou override
+    base = CONFIG['audio'].get('override_base_sensitivity')
+    if base is None:
+        log("Calibration du bruit (2s)...", level='info')
+        t0 = time.time(); vals = []
+        while time.time() - t0 < 2.0:
+            time.sleep(0.04)
+            vals.append(avgabs(b"".join(cap.mon[-8:]) if cap.mon else b""))
+        base = int(sum(vals) / max(1, len(vals)))
+        log(f"Calibration terminée. Niveau de bruit de base: {base}", level='info')
+    else:
+        log(f"Calibration ignorée. Niveau de bruit manuel: {base}", level='info', color=bcolors.WARNING)
+
+    START = max(4, int(base * start_mult))
+    STOP = max(3, int(base * stop_mult))
+    log(f"[VAD] Profil {vad_level}: base={base}, START={START}, STOP={STOP}, SILHOLD={SILHOLD}s", level='debug')
 
     time.sleep(0.5)
 
@@ -370,19 +384,16 @@ def main():
         # enregistrement + endpointing agressif
         cap.start(); t0 = time.time(); last = t0; low = 0
         leds.listening_recording()
-        while time.time() - t0 < 3.0:
+        while time.time() - t0 < 5.0:  # Max 5s d'enregistrement
             recent = b"".join(cap.mon[-3:]) if cap.mon else b""
             fr = recent[-320:] if len(recent) >= 320 else recent
             e = avgabs(fr)
             if e >= STOP:
-                last = time.time(); low = 0
-            else:
-                low += 1
-            if time.time() - last >= SILHOLD:
+                last = time.time()
+
+            if time.time() - last > SILHOLD:
                 break
-            if low >= FAST_FRAMES and time.time() - t0 >= MIN_UTT:
-                break
-            time.sleep(0.01)
+            time.sleep(0.02)
 
         wav = cap.stop(STOP)
         if not wav:

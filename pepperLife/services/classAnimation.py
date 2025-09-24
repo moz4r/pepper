@@ -147,6 +147,10 @@ class Animation(object):
         return rp if rp.startswith("animations/") else ("animations/" + rp)
 
     # ------------- API publique -------------
+    def get_installed_animations(self):
+        """Retourne une liste triée des animations installées (clés ou .qianim)."""
+        return sorted(list(self.installed_qianim if self.is_29 else self.installed_keys))
+
     def health_check(self):
         """
         Ne loggue pas le compteur (déjà loggué au refresh).
