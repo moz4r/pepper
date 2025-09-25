@@ -1,0 +1,23 @@
+
+:root { --bg:#0b1020; --panel:#121a2e; --muted:#98a2b3; --fg:#e5e7eb; --acc:#7c9cff; --ok:#22c55e; --warn:#f59e0b; --bad:#ef4444; --chip:#1f2a44; }
+*{box-sizing:border-box} html,body{margin:0;height:100%;background:var(--bg);color:var(--fg);font:15px/1.4 system-ui,-apple-system,Segoe UI,Roboto,Ubuntu,Cantarell,Noto Sans,Arial,sans-serif}
+.wrap{max-width:1280px;margin:0 auto;padding:16px}
+header{display:flex;align-items:center;justify-content:space-between;gap:12px;margin-bottom:16px}
+h1{font-size:22px;margin:0;letter-spacing:.3px}
+nav{display:flex;flex-wrap:wrap;gap:6px}
+nav a{padding:8px 10px;border-radius:10px;border:1px solid #334155;background:#16213c;color:var(--fg);text-decoration:none}
+nav a.active{border-color:#7c9cff}
+.grid{display:grid;grid-template-columns:repeat(12,1fr);gap:12px}
+.card{grid-column:span 12;background:var(--panel);border:1px solid #1e293b;border-radius:14px;padding:14px;box-shadow:0 6px 20px rgba(0,0,0,.25)}
+@media(min-width:760px){.span-4{grid-column:span 4}.span-6{grid-column:span 6}.span-8{grid-column:span 8}.span-12{grid-column:span 12}}
+.title{font-weight:600;margin-bottom:8px;letter-spacing:.2px}
+.row{display:flex;align-items:center;gap:12px;flex-wrap:wrap}
+.kvs{display:flex;flex-wrap:wrap;gap:8px}
+.kv{background:#0d1428;border:1px solid #1e2a47;border-radius:10px;padding:8px 10px;min-width:140px}
+.k{font-size:12px;color:var(--muted)} .v{font-weight:600}
+.chip{background:var(--chip);padding:6px 10px;border-radius:999px;font-size:12px}
+.btn{cursor:pointer;border:1px solid #334155;background:#16213c;color:var(--fg);padding:8px 12px;border-radius:10px;font-weight:600}
+input[type=range]{width:220px} .meter{height:10px;width:220px;background:#0b1324;border:1px solid #233355;border-radius:999px;overflow:hidden}
+.meter>i{display:block;height:100%;width:0%;background:linear-gradient(90deg,#58a6ff,#22c55e)}
+.table{width:100%;border-collapse:collapse} .table th,.table td{border:1px solid #233355;padding:6px 8px}
+input,select{background:#0d1428;border:1px solid #1f2a44;color:var(--fg);padding:8px;border-radius:8px}

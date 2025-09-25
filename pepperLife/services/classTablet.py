@@ -13,12 +13,13 @@ class classTablet(object):
     Permet de fournir la version via un provider (callable) ou un fichier.
     """
     def __init__(self, session=None, logger=None, port=8088,
-                 version_text=u"dev", version_file=None, version_provider=None, mic_toggle_callback=None, listener=None):
+                 version_text=u"dev", version_file=None, version_provider=None, mic_toggle_callback=None, listener=None, speaker=None):
         self.session = session
         self._log = logger or (lambda msg, **k: print(msg))
         self.port = int(port)
         self.mic_toggle_callback = mic_toggle_callback
         self.listener = listener
+        self.speaker = speaker
 
         # Source de vérité pour la version
         self.version_provider = version_provider
@@ -27,17 +28,25 @@ class classTablet(object):
 
         self.script_dir = os.path.dirname(os.path.abspath(__file__))
         self.ui_dir = os.path.join(os.path.dirname(self.script_dir), "gui")
-        self.web_server = WebServer(logger=self._log, ui_dir=self.ui_dir, port=self.port, mic_toggle_callback=self.mic_toggle_callback, session=self.session, listener=self.listener)
-        self.port = self.web_server.port
+        
+        self.web_server = WebServer(root_dir=self.ui_dir, session=self.session, logger=self._log)
+        self.web_server.mic_toggle_callback = self.mic_toggle_callback
+        self.web_server.listener = self.listener
+        self.web_server.speaker = self.speaker
+        self.web_server.heartbeat_callback = self.update_heartbeat
+
         self.tablet = None
         self.last_capture = None
         self._ensure_ui_files()
 
         self.al_memory = None
         self.heartbeat_key = "webview/alive"
+        
+        # Le WebServer gère son propre thread, on n'a plus besoin de http_thread ici
 
         self.keep_showing = False
         self.show_thread = None
+        self.stop_event = threading.Event()
 
         # Suivi local (évite les refresh intempestifs si ALMemory mal typé)
         self._last_hb_local = 0.0  # epoch seconds
@@ -60,8 +69,11 @@ class classTablet(object):
         # Rafraîchit la version
         self.version_text = self._resolve_version(self.version_text)
         self._log("[Tablet] Version UI = %s" % self.version_text)
-        self.web_server.start(self)
-        self.port = self.web_server.port
+        
+        self.web_server.version_text = self.version_text
+        httpd = self.web_server.start(host='0.0.0.0', port=self.port)
+        self.port = httpd.server_address[1]
+
         if self.tablet:
             self.tablet.wakeUp()
             self.tablet.turnScreenOn(True)
@@ -96,6 +108,7 @@ class classTablet(object):
     def stop(self):
         """Arrête proprement: cache la webview + coupe le serveur HTTP."""
         self.keep_showing = False
+        self.stop_event.set()
         if self.show_thread:
             self.show_thread.join()
         self.hide()
@@ -179,7 +192,7 @@ class classTablet(object):
                     self._last_show_ts = now
             except Exception as e:
                 self._log("[Tablet] Erreur dans _keep_showing_loop: %s" % e, level='error')
-            time.sleep(10)  # Vérification toutes les 10s
+            self.stop_event.wait(10)  # Vérification toutes les 10s
 
     # ---------- Internes ----------
     def _resolve_version(self, default_text):

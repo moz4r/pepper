@@ -261,24 +261,27 @@ def main():
             leds.idle()
         return is_enabled
 
+    beh = BehaviorManager(s, _logger, default_speed=0.5)
+
+    tts = s.service("ALAnimatedSpeech")
+    speaker = Speaker(tts, leds, cap, beh, anim=anim)
+
     _tablet_ui = classTablet(
         session=s,
         logger=_logger,
         port=8088,
         version_provider=SysVersion.get,
         mic_toggle_callback=toggle_micro,
-        listener=cap
+        listener=cap,
+        speaker=speaker
     )
     _tablet_ui.start(show=True)
 
-    beh = BehaviorManager(s, _logger, default_speed=0.5)
     beh.boot()
 
     stt_service = STT(CONFIG)
     chat_service = Chat(CONFIG, system_prompt=SYSTEM_PROMPT)
     vision_service = Vision(CONFIG, s, _logger)
-    tts = s.service("ALAnimatedSpeech")
-    speaker = Speaker(tts, leds, cap, beh, anim=anim)
 
     api_key = CONFIG['openai'].get('api_key')
     if api_key:
@@ -344,7 +347,7 @@ def main():
         # Modes utiles : "Head", "BodyRotation", "WholeBody"
         ba.setTrackingMode("Head")
         # Niveaux possibles : "Unengaged", "SemiEngaged", "FullyEngaged"
-        ba.setEngagementMode("FullyEngaged")
+        ba.setEngagementMode("SemiEngaged")
         # Active la détection (faces, sons, mouvement, toucher)
         ba.startAwareness()
         log("[BA] BasicAwareness démarré (tracking=Head, engagement=FullyEngaged)", level='info')
@@ -352,111 +355,114 @@ def main():
         log("[BA] Impossible de démarrer BasicAwareness: %s" % e, level='warning')
 
     # Boucle: listen → record → STT → (vision ? chat) → TTS/Actions
-    while True:
-        # départ écoute
-        started = False
-        since = None
-        t_wait = time.time()
-        while time.time() - t_wait < 5.0:
-            if cap.is_speaking():
-                time.sleep(0.05)
-                continue
-
-            vol = avgabs(b"".join(cap.mon[-8:]) if cap.mon else b"")
-            if vol >= START:
-                if since is None:
-                    since = time.time()
-                elif time.time() - since >= 0.15:
-                    started = True
-                    break
-            else:
-                since = None
-            time.sleep(0.03)
-        if not started:
-            continue
-
-        if not cap.is_micro_enabled():
-            continue
-
-        if cap.is_speaking():
-            continue
-
-        # enregistrement + endpointing agressif
-        cap.start(); t0 = time.time(); last = t0; low = 0
-        leds.listening_recording()
-        while time.time() - t0 < 5.0:  # Max 5s d'enregistrement
-            recent = b"".join(cap.mon[-3:]) if cap.mon else b""
-            fr = recent[-320:] if len(recent) >= 320 else recent
-            e = avgabs(fr)
-            if e >= STOP:
-                last = time.time()
-
-            if time.time() - last > SILHOLD:
-                break
-            time.sleep(0.02)
-
-        wav = cap.stop(STOP)
-        if not wav:
-            continue
-
-        # STT -> Routeur (vision ? chat) -> parler & bouger
-        try:
-            txt = stt_service.stt(wav)
-            log("[ASR] " + str(txt), level='info')
-            if not txt:
-                continue
-
-            txt_lower = txt.lower()
-
-            # ----- Commandes explicites d'affichage caméra (optionnel) -----
-            if "affiche la caméra" in txt_lower or "affiche le flux" in txt_lower:
-                log("[VISION] Affichage du flux vidéo...", level='info')
-                _tablet_ui.show_video_feed()
-                speaker.say_quick("Voilà ce que je vois en direct.")
-                continue
-
-            # ----- Déclencheur générique vision (configurable) -----
-            if vision_service._utterance_triggers_vision(txt_lower):
-                log("[VISION] Déclenchement par triggers-config.", level='info')
-                png_bytes = vision_service.get_png()
-                _tablet_ui.set_last_capture(png_bytes)
-                _tablet_ui.show_last_capture_on_tablet()
-
-                if not png_bytes:
-                    speaker.say_quick("Je n'ai pas réussi à prendre de photo.")
+    try:
+        while True:
+            # départ écoute
+            started = False
+            since = None
+            t_wait = time.time()
+            while time.time() - t_wait < 5.0:
+                if cap.is_speaking():
+                    time.sleep(0.05)
                     continue
 
+                vol = avgabs(b"".join(cap.mon[-8:]) if cap.mon else b"")
+                if vol >= START:
+                    if since is None:
+                        since = time.time()
+                    elif time.time() - since >= 0.15:
+                        started = True
+                        break
+                else:
+                    since = None
+                time.sleep(0.03)
+            if not started:
+                continue
+
+            if not cap.is_micro_enabled():
+                continue
+
+            if cap.is_speaking():
+                continue
+
+            # enregistrement + endpointing agressif
+            cap.start(); t0 = time.time(); last = t0
+            leds.listening_recording()
+            while time.time() - t0 < 5.0:  # Max 5s d'enregistrement
+                recent = b"".join(cap.mon[-3:]) if cap.mon else b""
+                fr = recent[-320:] if len(recent) >= 320 else recent
+                e = avgabs(fr)
+                if e >= STOP:
+                    last = time.time()
+
+                if time.time() - last > SILHOLD:
+                    break
+                time.sleep(0.02)
+
+            wav = cap.stop(STOP)
+            if not wav:
+                continue
+
+            # STT -> Routeur (vision ? chat) -> parler & bouger
+            try:
+                txt = stt_service.stt(wav)
+                log("[ASR] " + str(txt), level='info')
+                if not txt:
+                    continue
+
+                txt_lower = txt.lower()
+
+                # ----- Commandes explicites d'affichage caméra (optionnel) -----
+                if "affiche la caméra" in txt_lower or "affiche le flux" in txt_lower:
+                    log("[VISION] Affichage du flux vidéo...", level='info')
+                    _tablet_ui.show_video_feed()
+                    speaker.say_quick("Voilà ce que je vois en direct.")
+                    continue
+
+                # ----- Déclencheur générique vision (configurable) -----
+                if vision_service._utterance_triggers_vision(txt_lower):
+                    log("[VISION] Déclenchement par triggers-config.", level='info')
+                    png_bytes = vision_service.get_png()
+                    _tablet_ui.set_last_capture(png_bytes)
+                    _tablet_ui.show_last_capture_on_tablet()
+
+                    if not png_bytes:
+                        speaker.say_quick("Je n'ai pas réussi à prendre de photo.")
+                        continue
+
+                    leds.processing()
+                    log("Appel à vision_chat en cours...", level='info')
+                    rep = vision_service.vision_chat(txt, png_bytes, hist_vision)
+                    log(f"Retour de vision_chat. Réponse: '{rep}'", level='info')
+                    log("[GPT-V] " + rep, level='info', color=bcolors.OKCYAN)
+                    speaker.say_quick(rep)
+                    # Historique vision (nettoyé des marqueurs éventuels)
+                    hist_vision.append(("user", txt))
+                    hist_vision.append(("assistant", rep))
+                    # on garde court
+                    hist_vision[:] = hist_vision[-6:]
+                    continue
+
+                # ----- Filtrage bruit / doublons -----
+                if is_noise_utterance(txt, BLACKLIST_STRICT) or is_recent_duplicate(txt):
+                    log("[ASR] filtré (bruit/blacklist): " + txt, level='info', color=bcolors.WARNING)
+                    leds.idle()
+                    continue
+
+                # ----- Chat texte standard -----
+                hist.append(("user", txt)); hist = hist[-8:]
                 leds.processing()
-                log("Appel à vision_chat en cours...", level='info')
-                rep = vision_service.vision_chat(txt, png_bytes, hist_vision)
-                log(f"Retour de vision_chat. Réponse: '{rep}'", level='info')
-                log("[GPT-V] " + rep, level='info', color=bcolors.OKCYAN)
+                rep = chat_service.chat(txt, hist[:-1])
+                log("[GPT] " + rep, level='info', color=bcolors.OKCYAN)
                 speaker.say_quick(rep)
-                # Historique vision (nettoyé des marqueurs éventuels)
-                hist_vision.append(("user", txt))
-                hist_vision.append(("assistant", rep))
-                # on garde court
-                hist_vision[:] = hist_vision[-6:]
-                continue
+                hist.append(("assistant", rep))
+                time.sleep(0.5)
 
-            # ----- Filtrage bruit / doublons -----
-            if is_noise_utterance(txt, BLACKLIST_STRICT) or is_recent_duplicate(txt):
-                log("[ASR] filtré (bruit/blacklist): " + txt, level='info', color=bcolors.WARNING)
-                leds.idle()
-                continue
-
-            # ----- Chat texte standard -----
-            hist.append(("user", txt)); hist = hist[-8:]
-            leds.processing()
-            rep = chat_service.chat(txt, hist[:-1])
-            log("[GPT] " + rep, level='info', color=bcolors.OKCYAN)
-            speaker.say_quick(rep)
-            hist.append(("assistant", rep))
-            time.sleep(0.5)
-
-        except Exception as e:
-            log("[ERR] " + str(e), level='error', color=bcolors.FAIL)
-            speaker.say_quick("Petit pépin réseau, on réessaie.")
+            except Exception as e:
+                log("[ERR] " + str(e), level='error', color=bcolors.FAIL)
+                speaker.say_quick("Petit pépin réseau, on réessaie.")
+    except KeyboardInterrupt:
+        log("\nCtrl+C détecté. Arrêt du programme...", level='info')
 
 
 if __name__ == "__main__":
