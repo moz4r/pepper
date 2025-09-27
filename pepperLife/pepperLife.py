@@ -176,7 +176,7 @@ def main():
     log(r"""
    .----.
   /      \
- |  () () |   PepperLife
+ |  () ()    PepperLife
   \   -  /    ==========
     """, level='info', color=bcolors.OKCYAN)
 
@@ -266,6 +266,8 @@ def main():
     tts = s.service("ALAnimatedSpeech")
     speaker = Speaker(tts, leds, cap, beh, anim=anim)
 
+    vision_service = Vision(CONFIG, s, _logger)
+
     _tablet_ui = classTablet(
         session=s,
         logger=_logger,
@@ -273,7 +275,8 @@ def main():
         version_provider=SysVersion.get,
         mic_toggle_callback=toggle_micro,
         listener=cap,
-        speaker=speaker
+        speaker=speaker,
+        vision_service=vision_service
     )
     _tablet_ui.start(show=True)
 
@@ -305,7 +308,7 @@ def main():
 
     # Calibration bruit ou override
     base = CONFIG['audio'].get('override_base_sensitivity')
-    if base is None:
+    if base is None or base == '':
         log("Calibration du bruit (2s)...", level='info')
         t0 = time.time(); vals = []
         while time.time() - t0 < 2.0:

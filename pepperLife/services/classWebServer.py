@@ -31,10 +31,16 @@ classWebServer.py — Serveur web pour PepperLife (version étendue)
   - POST /api/settings/set {...}
   - GET  /api/logs/tail?n=200
 
+• Ajoute la gestion du backend
+  - GET  /api/system/status
+  - POST /api/system/start
+  - POST /api/system/stop
+  - GET  /api/system/logs
+
 Toutes les routes échouent en douceur si le service NAOqi demandé n'est pas disponible.
 
 Intégration :
-    server = WebServer(root_dir='./gui', session=qi.Session(), logger=print)
+    server = WebServer(root_dir='./html', session=qi.Session(), logger=print)
     server.version_text = '1.0.0'
     server.start(host='0.0.0.0', port=8080)
 
@@ -47,8 +53,23 @@ import time
 import socket
 import threading
 import traceback
+import subprocess
+import collections
 from io import BytesIO
 from urllib.parse import urlparse, parse_qs
+
+def ansi_to_html(text):
+    text = text.replace('&', '&amp;').replace('<', '&lt;').replace('>', '&gt;')
+    text = text.replace('\033[95m', '<span style="color: magenta">')
+    text = text.replace('\033[94m', '<span style="color: blue">')
+    text = text.replace('\033[96m', '<span style="color: cyan">')
+    text = text.replace('\033[92m', '<span style="color: green">')
+    text = text.replace('\033[93m', '<span style="color: yellow">')
+    text = text.replace('\033[91m', '<span style="color: red">')
+    text = text.replace('\033[1m', '<span style="font-weight: bold">')
+    text = text.replace('\033[4m', '<span style="text-decoration: underline">')
+    text = text.replace('\033[0m', '</span>')
+    return text
 
 try:
     from http.server import SimpleHTTPRequestHandler
@@ -56,6 +77,8 @@ try:
 except ImportError:  # Py2 fallback (au cas où)
     from SimpleHTTPServer import SimpleHTTPRequestHandler
     from SocketServer import TCPServer
+
+from .classSystem import version as SysVersion
 
 # Optionnel : pour wifi fallback
 
@@ -82,10 +105,15 @@ class WebServer(object):
         self.listener = None  # Doit exposer .mon (buffers audio) si utilisé
         self.speaker = None
         self.version_text = 'dev'
+        self.vision_service = None
 
         # Hooks internes
         self._last_heartbeat = 0
         self._httpd = None
+
+        # Pour la gestion du processus backend
+        self._backend_process = None
+        self._backend_logs = collections.deque(maxlen=500)
 
     # —————— Helpers NAOqi ——————
     def svc(self, name):
@@ -100,6 +128,14 @@ class WebServer(object):
         self._last_heartbeat = time.time()
         if self.heartbeat_callback:
             self.heartbeat_callback()
+
+    def _read_output(self, pipe):
+        """Lit la sortie d'un pipe et l'ajoute aux logs."""
+        try:
+            for line in iter(pipe.readline, b''):
+                self._backend_logs.append(line.decode('utf-8', 'ignore').strip())
+        finally:
+            pipe.close()
 
     # —————— Serveur ——————
     def start(self, host='0.0.0.0', port=8080):
@@ -120,6 +156,19 @@ class WebServer(object):
         return httpd
 
     def stop(self):
+        if self._backend_process:
+            self._logger("[WebServer] Stopping managed backend process...")
+            try:
+                os.killpg(os.getpgid(self._backend_process.pid), subprocess.signal.SIGTERM)
+                self._backend_process.wait(timeout=5)
+            except Exception as e:
+                self._logger(f"[WebServer] Error terminating backend process, trying to kill: {e}")
+                try:
+                    os.killpg(os.getpgid(self._backend_process.pid), subprocess.signal.SIGKILL)
+                except Exception as e2:
+                    self._logger(f"Error killing backend process: {e2}", level='error')
+            self._backend_process = None
+
         if self._httpd:
             self._httpd.shutdown()
             self._httpd.server_close()
@@ -132,6 +181,17 @@ class WebServer(object):
         class Handler(SimpleHTTPRequestHandler):
             server_version = 'PepperLifeHTTP/1.0'
 
+            def do_OPTIONS(self):
+                self.send_response(200, "ok")
+                self.send_header('Access-Control-Allow-Origin', '*')
+                self.send_header('Access-Control-Allow-Methods', 'GET, POST, OPTIONS')
+                self.send_header("Access-Control-Allow-Headers", "X-Requested-With, Content-Type")
+                self.end_headers()
+
+            def log_message(self, format, *args):
+                # Redirige les logs d'accès HTTP vers le niveau debug
+                parent._logger(format % args, level='debug')
+
             # Utilitaires HTTP
             def _json(self, code, payload, headers=None):
                 try:
@@ -139,6 +199,7 @@ class WebServer(object):
                 except Exception as e:
                     data = json.dumps({'error': 'json', 'detail': str(e)}).encode('utf-8')
                 self.send_response(code)
+                self.send_header('Access-Control-Allow-Origin', '*')
                 self.send_header('Content-Type', 'application/json; charset=utf-8')
                 self.send_header('Cache-Control', 'no-store')
                 if headers:
@@ -149,6 +210,7 @@ class WebServer(object):
 
             def _text(self, code, text, ctype='text/plain; charset=utf-8'):
                 self.send_response(code)
+                self.send_header('Access-Control-Allow-Origin', '*')
                 self.send_header('Content-Type', ctype)
                 self.end_headers()
                 if isinstance(text, str):
@@ -165,6 +227,7 @@ class WebServer(object):
                     with open(p, 'r', encoding='utf-8') as f:
                         content = f.read()
                     content = content.replace('%VER%', getattr(parent, 'version_text', 'dev'))
+                    self.send_header('Access-Control-Allow-Origin', '*')
                     self._text(200, content, 'text/html; charset=utf-8')
                 except Exception as e:
                     self._send_503('Error reading index.html: %s' % e)
@@ -174,6 +237,14 @@ class WebServer(object):
                 parent._logger(f"GET {self.path}", level='debug')
                 parsed = urlparse(self.path)
                 path = parsed.path
+
+                if path == '/api/system/status':
+                    self._get_system_status()
+                    return
+                
+                if path == '/api/system/logs':
+                    self._get_system_logs()
+                    return
 
                 # 1) Heartbeat
                 if path == '/api/heartbeat':
@@ -209,7 +280,7 @@ class WebServer(object):
                     listener = getattr(self.server, 'listener', None)
                     if listener and hasattr(listener, 'mon'):
                         try:
-                            level = avgabs(b''.join(listener.mon[-1:]))
+                            level = avgabs(listener.get_last_audio_chunk())
                             self._json(200, {'level': level})
                         except Exception as e:
                             self._send_503('sound_level error: %s' % e)
@@ -275,6 +346,14 @@ class WebServer(object):
                     self._settings_get()
                     return
 
+                if path == '/api/config/default':
+                    self._config_get_default()
+                    return
+
+                if path == '/api/config/user':
+                    self._config_get_user()
+                    return
+
                 if path == '/api/logs/tail':
                     self._logs_tail(parsed)
                     return
@@ -293,6 +372,30 @@ class WebServer(object):
                     payload = json.loads(body.decode('utf-8')) if body else {}
                 except Exception:
                     payload = {}
+
+                if path == '/api/system/start':
+                    self._system_start()
+                    return
+
+                if path == '/api/system/stop':
+                    self._system_stop()
+                    return
+
+                if path == '/api/system/shutdown':
+                    self._system_shutdown()
+                    return
+
+                if path == '/api/system/restart':
+                    self._system_restart()
+                    return
+
+                if path == '/api/camera/start_stream':
+                    self._camera_start_stream()
+                    return
+
+                if path == '/api/camera/stop_stream':
+                    self._camera_stop_stream()
+                    return
 
                 if path == '/api/volume/set':
                     try:
@@ -335,6 +438,10 @@ class WebServer(object):
                     self._settings_set(payload)
                     return
 
+                if path == '/api/config/user':
+                    self._config_set_user(payload)
+                    return
+
                 if path == '/api/speak':
                     self._speak(payload)
                     return
@@ -344,8 +451,150 @@ class WebServer(object):
             # ————————————————————————————————
             # Implémentations API
             # ————————————————————————————————
+
+            def _system_shutdown(self):
+                try:
+                    al_system = self.server.session.service('ALSystem') if self.server.session else None
+                    if al_system:
+                        al_system.shutdown()
+                        self._json(200, {'status': 'ok', 'message': 'Shutdown initiated.'})
+                    else:
+                        self._send_503('ALSystem service not available.')
+                except Exception as e:
+                    self._send_503('Shutdown failed: %s' % e)
+
+            def _system_restart(self):
+                try:
+                    al_system = self.server.session.service('ALSystem') if self.server.session else None
+                    if al_system:
+                        al_system.reboot()
+                        self._json(200, {'status': 'ok', 'message': 'Restart initiated.'})
+                    else:
+                        self._send_503('ALSystem service not available.')
+                except Exception as e:
+                    self._send_503('Restart failed: %s' % e)
+
+            def _camera_start_stream(self):
+                try:
+                    vision = self.server.parent.vision_service
+                    if vision:
+                        vision.start_streaming()
+                        self._json(200, {'status': 'ok'})
+                    else:
+                        self._send_503('Vision service not available.')
+                except Exception as e:
+                    self._send_503('Failed to start stream: %s' % e)
+
+            def _camera_stop_stream(self):
+                try:
+                    vision = self.server.parent.vision_service
+                    if vision:
+                        vision.stop_streaming()
+                        self._json(200, {'status': 'ok'})
+                    else:
+                        self._send_503('Vision service not available.')
+                except Exception as e:
+                    self._send_503('Failed to stop stream: %s' % e)
+
+            def _config_get_default(self):
+                try:
+                    app_dir = os.path.abspath(os.path.join(os.path.dirname(__file__), '..'))
+                    config_path = os.path.join(app_dir, 'config.json.default')
+                    with open(config_path, 'r', encoding='utf-8') as f:
+                        content = f.read()
+                    self._text(200, content, ctype='text/plain; charset=utf-8')
+                except Exception as e:
+                    self._send_503('Failed to read default config: %s' % e)
+
+            def _config_get_user(self):
+                try:
+                    app_dir = os.path.abspath(os.path.join(os.path.dirname(__file__), '..'))
+                    config_path = os.path.join(app_dir, 'config.json')
+                    with open(config_path, 'r', encoding='utf-8') as f:
+                        data = json.load(f)
+                    self._json(200, data)
+                except Exception as e:
+                    self._send_503('Failed to read user config: %s' % e)
+
+            def _config_set_user(self, payload):
+                try:
+                    app_dir = os.path.abspath(os.path.join(os.path.dirname(__file__), '..'))
+                    config_path = os.path.join(app_dir, 'config.json')
+                    with open(config_path, 'w', encoding='utf-8') as f:
+                        json.dump(payload, f, indent=2, ensure_ascii=False)
+                    self._json(200, {'success': True})
+                except Exception as e:
+                    self._send_503('Failed to write user config: %s' % e)
+
+            def _get_system_status(self):
+                python3_exists = SysVersion.is_python3_nao_installed()
+                
+                backend_running = False
+                if parent._backend_process:
+                    backend_running = parent._backend_process.poll() is None
+
+                self._json(200, {
+                    'python3_installed': python3_exists,
+                    'backend_running': backend_running,
+                })
+
+            def _get_system_logs(self):
+                logs_html = [ansi_to_html(log) for log in parent._backend_logs]
+                self._json(200, {'logs': logs_html})
+
+            def _system_start(self):
+                if parent._backend_process and parent._backend_process.poll() is None:
+                    self._json(409, {'error': 'Backend already running.'})
+                    return
+
+                parent._backend_logs.clear()
+                
+                cmd = [
+                    '/home/nao/.local/share/PackageManager/apps/python3nao/bin/runpy3.sh',
+                    '/home/nao/.local/share/PackageManager/apps/pepperlife/pepperLife.py'
+                ]
+                
+                try:
+                    parent._logger(f"Starting backend process with command: {' '.join(cmd)}")
+                    proc = subprocess.Popen(
+                        cmd,
+                        stdout=subprocess.PIPE,
+                        stderr=subprocess.STDOUT,
+                        pre_exec_fn=os.setsid
+                    )
+                    parent._backend_process = proc
+                    
+                    th = threading.Thread(target=parent._read_output, args=(proc.stdout,))
+                    th.daemon = True
+                    th.start()
+
+                    self._json(200, {'status': 'ok', 'pid': proc.pid})
+                except Exception as e:
+                    parent._logger(f"Failed to start backend process: {e}", level='error')
+                    self._send_503(f"Failed to start backend: {e}")
+
+            def _system_stop(self):
+                if not parent._backend_process or parent._backend_process.poll() is not None:
+                    self._json(409, {'error': 'Backend not running.'})
+                    return
+                
+                try:
+                    parent._logger(f"Stopping backend process with PID: {parent._backend_process.pid}")
+                    os.killpg(os.getpgid(parent._backend_process.pid), subprocess.signal.SIGTERM)
+                    parent._backend_process.wait(timeout=5)
+                except Exception as e:
+                    parent._logger(f"Error stopping backend process, trying to kill: {e}", level='warning')
+                    try:
+                        os.killpg(os.getpgid(parent._backend_process.pid), subprocess.signal.SIGKILL)
+                    except Exception as e2:
+                         parent._logger(f"Error killing backend process: {e2}", level='error')
+
+                parent._backend_process = None
+                self._json(200, {'status': 'ok'})
+
             def _get_system_info(self):
                 info = {
+                    'version': getattr(self.server.parent, 'version_text', 'dev'),
                     'naoqi_version': None,
                     'ip_addresses': [],
                     'internet_connected': False,
@@ -521,9 +770,15 @@ class WebServer(object):
                             f"{stem}/Available", f"{stem}/Bus", f"{stem}/Type",
                         ]
                         vals = get_data_for_keys(keys_to_fetch)
+
+                        # Exclure si le type est 'plugin'
+                        device_type = vals[9]
+                        if isinstance(device_type, str) and device_type.lower() == 'plugin':
+                            continue
+
                         devices_data[name] = {
                             'Ack': vals[0], 'Nack': vals[1], 'Version': vals[2], 'Error': vals[3], 'Address': vals[4],
-                            'Bootloader': vals[5], 'BoardId': vals[6], 'Available': vals[7], 'Bus': vals[8], 'Type': vals[9],
+                            'Bootloader': vals[5], 'BoardId': vals[6], 'Available': vals[7], 'Bus': vals[8], 'Type': device_type,
                         }
                 except Exception as e:
                     devices_data = {'error': f'Failed to get devices data: {e}'}

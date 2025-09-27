@@ -115,20 +115,32 @@ class Listener(object):
             try: buf = bytes(buf)
             except: return
 
+        # Verrouiller pour lire l'état de la parole en toute sécurité
         with self.lock:
             is_speaking = self.speaking
             stop_time = self.speech_stop_time
+            micro_on = self.microEnabled.get("on", True)
+            is_recording = self.on
 
         time_since_stop = time.time() - stop_time
 
-        if is_speaking or (time_since_stop < self.speech_cooldown) or not self.microEnabled["on"]:
+        if is_speaking or (time_since_stop < self.speech_cooldown) or not micro_on:
             return
 
-        # Idle/écoute active
-        self.mon.append(buf); self.pre.append(buf)
-        if len(self.mon) > 24: self.mon = self.mon[-24:]
-        if len(self.pre) > self.maxpre: self.pre = self.pre[-self.maxpre:]
-        if self.on: self.rec.append(buf)
+        # Verrouiller à nouveau pour modifier les tampons audio
+        with self.lock:
+            self.mon.append(buf)
+            self.pre.append(buf)
+            if len(self.mon) > 24: self.mon = self.mon[-24:]
+            if len(self.pre) > self.maxpre: self.pre = self.pre[-self.maxpre:]
+            if is_recording: self.rec.append(buf)
+
+    def get_last_audio_chunk(self):
+        """Récupère le dernier chunk audio de manière thread-safe."""
+        with self.lock:
+            if not self.mon:
+                return b''
+            return self.mon[-1]
 
     def start(self):
         self.rec = list(self.pre)

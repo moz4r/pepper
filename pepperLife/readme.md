@@ -1,18 +1,18 @@
-# PepperLife 0.4
+# PepperLife 0.5
 
 ![pepperlife_edited](https://github.com/user-attachments/assets/fba8f19b-ef94-4246-bdc5-7bd2d5027dfb)
 
 Pipeline léger **NAOqi + OpenAI** pour **Pepper** :
 
-- 🎙️ Écoute locale (ALAudioDevice 16 kHz) + VAD court
+- 🎙️ Écoute via streaming audio
 - 🔤 STT OpenAI (`gpt-4o-mini-transcribe`, fallback `whisper-1`)
-- 💬 Chat (`gpt-4o-mini`) avec *balises d’actions* exécutées via NAOqi
+- 💬 Chat (`gpt-4o-mini`)
 - 👁️ **Vision** : demandez "que vois-tu ?" pour que Pepper décrive la scène.
 - 💡 LEDs synchronisées : **Bleu** (REC) → **Violet** (réflexion) → **Blanc** (parole/idle)
 - 🕺 **Gestion dynamique des animations** : le LLM peut déclencher des animations (`^start(...)`) parmi un catalogue généré automatiquement au démarrage.
 - 🔇 Anti-larsen & anti-bruit (blacklist + heuristiques)
 - 🧩 Architecture par classes normalisées : `classLEDs.py`, `classAnimation.py`, `classRobotBehavior.py`
-- ✔️ Version actuelle : **0.4**
+- ✔️ Interface web de contrôle et de diagnostique du robot
 
 ---
 
@@ -25,38 +25,43 @@ Pipeline léger **NAOqi + OpenAI** pour **Pepper** :
 
 ```bash
 
-Réglage audio utile (sur Pepper) :
-amixer sset Capture 100%
 
 
 ## Installation
 
-**Chemin recommandé** : `/home/nao/pepperLife`
+Il y a deux méthodes pour installer l'application sur le robot.
 
-### 1) Téléchargez le zip et l'extraire suer le robot
-cd pepper/pepperLife
-facultatif si les dépendances ne s installent pas : 
+### Méthode 1 : Choregraphe (pour NAOqi ~2.7)
+
+1.  Ouvrez Choregraphe et connectez-vous à votre robot.
+2.  Sélectionnez le fichier `pepperlife.pkg` à installer.
+
+### Méthode 2 : Ligne de commande (pour NAOqi 2.9/2.7)
+
+1.  Transférez le fichier `pepperlife.pkg` sur le robot (par exemple dans `/home/nao/`) via `scp` ou `sftp`.
+2.  Connectez-vous au robot en SSH.
+3.  Lancez la commande :
+    ```bash
+    qicli call PackageManager.install /home/nao/pepperlife.pkg
+    ```
+
+### Post-installation : Dépendances
+
+Au premier lancement, le script essaiera d'installer les dépendances Python (comme `openai`) automatiquement. Si cela échoue, connectez-vous en SSH au robot et lancez :
+
+```bash
 /home/nao/.local/share/PackageManager/apps/python3nao/bin/runpy3.sh -m pip install --upgrade pip
 /home/nao/.local/share/PackageManager/apps/python3nao/bin/runpy3.sh -m pip install openai
 ```
 
-### Configuration
 
-La configuration se fait maintenant via le fichier `config.json`.
-Une fois le script lancé, un fichier `config.json` est créé à partir de `config.json.default`.
+### Utilisation
 
-Modifiez `config.json` pour y mettre vos propres paramètres :
-- **connection**: `ip` et `port` de votre robot.
-- **openai**: `api_key`, `stt_model`, `chat_model`, `custom_prompt`.
-- **vision**: `triggers` pour déclencher la vision.
-- **audio**: paramètres pour la détection de la parole.
-- **asr_filters**: `blacklist_strict` pour filtrer les faux positifs.
-- **log**: `verbosity` pour le niveau de log.
+Une fois l'application installée, le service de lancement démarre automatiquement avec le robot.
 
-Le prompt système est maintenant unifié dans `prompts/system_prompt.txt` et peut être complété via `custom_prompt` dans `config.json`.
-
-La clé API OpenAI peut être mise soit dans `config.json` (champ `api_key`), soit via la variable d'environnement `OPENAI_API_KEY`.
-
-### Lancement
-
-/home/nao/.local/share/PackageManager/apps/python3nao/bin/runpy3.sh pepperLife.py
+1.  Ouvrez un navigateur web sur un ordinateur connecté au même réseau que le robot.
+2.  Rendez-vous à l'adresse suivante, en remplaçant `<IP_DU_ROBOT>` par l'adresse IP de votre Pepper :
+    ```
+    http://<IP_DU_ROBOT>:8080
+    ```
+3.  Vous accéderez à l'interface web qui vous permettra de démarrer, arrêter et configurer l'application PepperLife.

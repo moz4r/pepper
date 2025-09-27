@@ -54,13 +54,22 @@ export function render(root){
   };
 
   startBtn.addEventListener('click', () => {
-    updateButtons(true);
-    step();
+    api.cameraStartStream().then(() => {
+        updateButtons(true);
+        step();
+    }).catch(err => {
+        errorSpan.textContent = 'Erreur au démarrage du flux: ' + err.message;
+        errorSpan.style.display = 'inline';
+    });
   });
 
   stopBtn.addEventListener('click', () => {
-    if (timer) clearTimeout(timer);
-    updateButtons(false);
+    api.cameraStopStream().then(() => {
+        if (timer) clearTimeout(timer);
+        updateButtons(false);
+    }).catch(err => {
+        alert('Erreur à l\'arrêt du flux: ' + err.message);
+    });
   });
 
   // Cleanup au cas où la vue est détruite sans que l'élément soit déconnecté

@@ -1,0 +1,77 @@
+<!doctype html>
+<html lang="fr"><head>
+<meta charset="utf-8"/><meta name="viewport" content="width=device-width, initial-scale=1"/>
+
+<title>PepperLife • Admin (annexe)</title>
+<link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/bootstrap-icons@1.10.5/font/bootstrap-icons.css">
+<link rel="stylesheet" href="./css/style.css"/>
+</head><body>
+  <div class="wrap">
+    <header>
+      <div>
+        <h1>PepperLife — Admin</h1>
+        
+      </div>
+      <nav id="nav"></nav>
+    </header>
+    <main id="app"></main>
+  </div>
+<script type="module">
+// Add cache busting parameter to all module imports
+const bust = `?t=${Date.now()}`;
+
+// Dynamically import modules to apply cache busting
+const {router, linkTo} = await import(`./js/router.js${bust}`);
+const {api} = await import(`./js/api.js${bust}`);
+const Home = await import(`./js/views/home.js${bust}`);
+const Hardware = await import(`./js/views/hardware.js${bust}`);
+const Memory = await import(`./js/views/memory.js${bust}`);
+const Settings = await import(`./js/views/settings.js${bust}`);
+const Tethering = await import(`./js/views/tethering.js${bust}`);
+const Apps = await import(`./js/views/apps.js${bust}`);
+const Life = await import(`./js/views/life.js${bust}`);
+const Posture = await import(`./js/views/posture.js${bust}`);
+const Camera = await import(`./js/views/camera.js${bust}`);
+const Logs = await import(`./js/views/logs.js${bust}`);
+const Audio = await import(`./js/views/audio.js${bust}`);
+
+const routes = {
+  '': Home, '#/': Home,
+  '#/hardware': Hardware,
+  '#/memory': Memory,
+  '#/settings': Settings,
+  '#/tethering': Tethering,
+  '#/apps': Apps,
+  '#/life': Life,
+  '#/posture': Posture,
+  '#/camera': Camera,
+  '#/logs': Logs,
+  '#/audio': Audio,
+};
+
+const navItems = [
+  ['Accueil', '#/'],
+  ['Hardware', '#/hardware'],
+  ['Audio', '#/audio'],
+  ['Mémoire', '#/memory'],
+  ['Réglages', '#/settings'],
+  ['Tethering', '#/tethering'],
+  ['Apps', '#/apps'],
+  ['Vie', '#/life'],
+  ['Posture', '#/posture'],
+  ['Caméra', '#/camera'],
+  ['Logs', '#/logs'],
+];
+const nav = document.getElementById('nav');
+navItems.forEach(([t, href])=>{
+  const a = document.createElement('a');
+  a.href=href;
+  a.textContent=t;
+  a.dataset.page = href;
+  if (href !== '#/') a.style.display = 'none';
+  nav.appendChild(a);
+});
+
+router(routes);
+</script>
+</body></html>

@@ -28,6 +28,12 @@ class version(object):
             pass
         return default
 
+    @classmethod
+    def is_python3_nao_installed(cls):
+        """Vérifie si le lanceur python3 de NAOqi est présent."""
+        runner_path = '/home/nao/.local/share/PackageManager/apps/python3nao/bin/runpy3.sh'
+        return os.path.exists(runner_path)
+
 # --- Prompt dynamique --------------------------------------------------
 
 def build_system_prompt_in_memory(base_text, animation_instance):

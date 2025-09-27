@@ -6,6 +6,8 @@ import io
 import time
 import png
 from openai import OpenAI
+import threading
+import os
 
 class Vision(object):
     def __init__(self, config, session, logger):
@@ -18,6 +20,36 @@ class Vision(object):
         self.fps = 5
         self.cam = None
         self.sub = None
+        self.is_streaming = False
+        self.streaming_thread = None
+        self.ui_dir = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), "html")
+        self.cam_png_path = os.path.join(self.ui_dir, "cam.png")
+
+    def _stream_loop(self):
+        while self.is_streaming:
+            png_data = self.get_png()
+            if png_data:
+                try:
+                    with open(self.cam_png_path, "wb") as f:
+                        f.write(png_data)
+                except Exception as e:
+                    self.log("[Vision] Error writing cam.png: %s" % e)
+            time.sleep(1.0 / self.fps)
+
+    def start_streaming(self):
+        if not self.is_streaming:
+            self.is_streaming = True
+            self.streaming_thread = threading.Thread(target=self._stream_loop)
+            self.streaming_thread.daemon = True
+            self.streaming_thread.start()
+            self.log("[Vision] Started streaming to cam.png")
+
+    def stop_streaming(self):
+        if self.is_streaming:
+            self.is_streaming = False
+            if self.streaming_thread:
+                self.streaming_thread.join()
+            self.log("[Vision] Stopped streaming to cam.png")
 
     def client(self):
         if self._client is None:

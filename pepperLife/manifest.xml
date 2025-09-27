@@ -1,0 +1,23 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<package uuid="pepperlife" version="0.5.0">
+    <names>
+        <name lang="en_US">PepperLife Robot Services</name>
+        <name lang="fr_FR">PepperLife Robot Services</name>
+    </names>
+    <descriptions>
+        <description lang="en_US">PepperLife Robot Services</description>
+        <description lang="fr_FR">PepperLife Robot Services</description>
+    </descriptions>
+    <services>
+        <service autorun="true" name="pepperlife" execStart="python2 bin/lanceur.py" />
+    </services>
+    <executableFiles>
+        <file path="python" />
+    </executableFiles>
+    <requirements>
+        <naoqiRequirement minVersion="2.5.5" />
+        <robotRequirement model="NAO"/>
+        <robotRequirement model="ROMEO"/>
+        <robotRequirement model="JULIETTE"/>
+    </requirements>
+</package>

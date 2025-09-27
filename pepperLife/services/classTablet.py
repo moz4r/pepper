@@ -13,7 +13,7 @@ class classTablet(object):
     Permet de fournir la version via un provider (callable) ou un fichier.
     """
     def __init__(self, session=None, logger=None, port=8088,
-                 version_text=u"dev", version_file=None, version_provider=None, mic_toggle_callback=None, listener=None, speaker=None):
+                 version_text=u"dev", version_file=None, version_provider=None, mic_toggle_callback=None, listener=None, speaker=None, vision_service=None):
         self.session = session
         self._log = logger or (lambda msg, **k: print(msg))
         self.port = int(port)
@@ -27,13 +27,14 @@ class classTablet(object):
         self.version_text = self._resolve_version(version_text)
 
         self.script_dir = os.path.dirname(os.path.abspath(__file__))
-        self.ui_dir = os.path.join(os.path.dirname(self.script_dir), "gui")
+        self.ui_dir = os.path.join(os.path.dirname(self.script_dir), "html")
         
         self.web_server = WebServer(root_dir=self.ui_dir, session=self.session, logger=self._log)
         self.web_server.mic_toggle_callback = self.mic_toggle_callback
         self.web_server.listener = self.listener
         self.web_server.speaker = self.speaker
         self.web_server.heartbeat_callback = self.update_heartbeat
+        self.web_server.vision_service = vision_service
 
         self.tablet = None
         self.last_capture = None
@@ -121,7 +122,7 @@ class classTablet(object):
         - from_tablet=True : utilise l'IP spéciale vue depuis la tablette (198.18.0.1).
         """
         host = "198.18.0.1" if from_tablet else "localhost"
-        return "http://%s:%d/index.html?t=%d" % (host, self.port, int(time.time()))
+        return "http://%s:%d/tablet/index.html?t=%d" % (host, self.port, int(time.time()))
 
     def set_last_capture(self, image_bytes):
         self.last_capture = image_bytes

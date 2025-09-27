@@ -1,0 +1,36 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Simple Button</title>
+    <style>
+        body { font-family: sans-serif; display: flex; flex-direction: column; align-items: center; margin-top: 50px; }
+        button { font-size: 1.2em; padding: 10px 20px; }
+        #logs { margin-top: 20px; width: 80%; height: 300px; border: 1px solid #ccc; overflow-y: scroll; white-space: pre-wrap; font-family: monospace; padding: 10px; }
+    </style>
+</head>
+<body>
+
+    <h1>Simple Action Runner</h1>
+    <button id="actionButton">Run Action & Get Logs</button>
+    <div id="logs">Logs will appear here...</div>
+
+    <script>
+        document.getElementById('actionButton').addEventListener('click', () => {
+            const logDiv = document.getElementById('logs');
+            logDiv.textContent = 'Requesting action...\n';
+
+            fetch('/run-action')
+                .then(response => response.text())
+                .then(text => {
+                    logDiv.textContent += text;
+                })
+                .catch(error => {
+                    logDiv.textContent += 'Error: ' + error;
+                });
+        });
+    </script>
+
+</body>
+</html>

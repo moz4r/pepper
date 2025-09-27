@@ -24,6 +24,25 @@ export function render(root){
   const box = document.createElement('section');
   box.className='card span-12';
   box.innerHTML = `
+    <style>
+      .table {
+        background-color: white;
+        color: black;
+      }
+      .table tbody tr:nth-child(odd) {
+        background-color: #f2f2f2;
+      }
+      .table tbody tr:nth-child(even) {
+        background-color: #e6e6e6;
+      }
+      .table .temp-orange {
+        background-color: orange !important;
+      }
+      .table .temp-red {
+        background-color: red !important;
+        color: white;
+      }
+    </style>
     <div class="title">Hardware Summary</div>
     <div class="kvs" id="kvs-hardware">Chargement...</div>
 
@@ -67,6 +86,15 @@ export function render(root){
   const configTbody = box.querySelector('#config-tbody');
   const headTempTbody = box.querySelector('#head-temp-tbody');
 
+  function getTempClass(temp) {
+    if (temp >= 60) {
+        return 'temp-red';
+    } else if (temp >= 50) {
+        return 'temp-orange';
+    }
+    return '';
+  }
+
   async function refresh() {
       try {
         // High-level info first
@@ -99,16 +127,19 @@ export function render(root){
 
         // Render Joints
         if (d_details.joints && !d_details.joints.error) {
-            jointsTbody.innerHTML = Object.entries(d_details.joints).map(([name, data]) => `
-                <tr>
+            jointsTbody.innerHTML = Object.entries(d_details.joints).map(([name, data]) => {
+                const temp = data.Temperature;
+                const tempClass = getTempClass(temp);
+                return `
+                <tr class="${tempClass}">
                     <td>${name}</td>
-                    <td>${data.Temperature?.toFixed(1) || 'N/A'}</td>
+                    <td>${temp?.toFixed(1) || 'N/A'}</td>
                     <td>${data.PositionSensor?.toFixed(3) || 'N/A'}</td>
                     <td>${data.PositionActuator?.toFixed(3) || 'N/A'}</td>
                     <td>${data.Stiffness?.toFixed(2) || 'N/A'}</td>
                     <td>${data.ElectricCurrent?.toFixed(3) || 'N/A'}</td>
                 </tr>
-            `).join('');
+            `}).join('');
         } else {
             jointsTbody.innerHTML = `<tr><td colspan="6">${d_details.joints?.error || 'Données non disponibles'}</td></tr>`;
         }
