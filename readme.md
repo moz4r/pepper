@@ -65,3 +65,9 @@ Une fois l'application installée, le service de lancement démarre automatiquem
     http://<IP_DU_ROBOT>:8080
     ```
 3.  Vous accéderez à l'interface web qui vous permettra de démarrer, arrêter et configurer l'application PepperLife.
+
+<img width="1793" height="1094" alt="image" src="https://github.com/user-attachments/assets/6023eaa0-73cd-4122-aaf8-fed1d9683fe4" />
+
+<img width="1788" height="912" alt="image" src="https://github.com/user-attachments/assets/80b240a6-6386-4046-a6a1-7a6ed2476ead" />
+
+
