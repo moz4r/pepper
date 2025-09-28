@@ -205,6 +205,27 @@ def main():
         log(f"Erreur de connexion à NAOqi: {e}", level='error', color=bcolors.FAIL)
         sys.exit(1)
 
+    # --- Watchdog for Autonomous Life ---
+    autolife_stop_event = threading.Event()
+    def autolife_watchdog(stop_event):
+        log("Démarrage du watchdog pour ALAutonomousLife.", level='info')
+        try:
+            autolife = s.service("ALAutonomousLife")
+            while not stop_event.is_set():
+                try:
+                    if autolife.getState() == 'solitary':
+                        log("ALAutonomousLife est passé en 'solitary', restauration vers 'interactive'.", level='warning', color=bcolors.WARNING)
+                        autolife.setState('interactive')
+                except Exception as e:
+                    log(f"Erreur dans le watchdog ALAutonomousLife: {e}", level='error')
+                stop_event.wait(2.0) # Use wait for responsive stop
+        except Exception as e:
+            log(f"Le service ALAutonomousLife n'est pas disponible, le watchdog ne démarrera pas: {e}", level='error')
+    
+    watchdog_thread = threading.Thread(target=autolife_watchdog, args=(autolife_stop_event,))
+    watchdog_thread.daemon = True
+    watchdog_thread.start()
+
     anim = Animation(s, log, robot_version=robot_version)
     anim.health_check()
 
@@ -282,33 +303,49 @@ def main():
                     if time.time() - last > SILHOLD:
                         break
                     time.sleep(0.02)
+                t_vad_end = time.time()
                 wav = cap.stop(STOP)
+                t_post_vad = time.time()
                 if not wav:
                     leds.idle()
                     continue
+                
+                log(f"[PERF] Audio processing: {t_post_vad - t_vad_end:.2f}s", level='info', color=bcolors.OKCYAN)
 
                 try:
+                    t_before_stt = time.time()
                     txt = stt_service.stt(wav)
+                    t_after_stt = time.time()
+                    log(f"[PERF] STT: {t_after_stt - t_before_stt:.2f}s", level='info', color=bcolors.OKCYAN)
+
                     log("[ASR] " + str(txt), level='info')
                     if not txt or is_noise_utterance(txt, BLACKLIST_STRICT) or is_recent_duplicate(txt):
                         leds.idle()
                         continue
 
                     leds.processing()
+                    
+                    t_before_chat = time.time()
                     if vision_service._utterance_triggers_vision(txt.lower()):
                         png_bytes = vision_service.get_png()
                         if png_bytes:
                             _tablet_ui.set_last_capture(png_bytes)
                             _tablet_ui.show_last_capture_on_tablet()
                             rep = vision_service.vision_chat(txt, png_bytes, hist_vision)
+                            t_after_chat = time.time()
+                            log(f"[PERF] Vision Chat: {t_after_chat - t_before_chat:.2f}s", level='info', color=bcolors.OKCYAN)
                             hist_vision.extend([("user", txt), ("assistant", rep)])
                             hist_vision = hist_vision[-6:]
                             speaker.say_quick(rep)
                         else:
+                            t_after_chat = time.time()
+                            log(f"[PERF] Vision (fail): {t_after_chat - t_before_chat:.2f}s", level='info', color=bcolors.OKCYAN)
                             speaker.say_quick("Je n'ai pas réussi à prendre de photo.")
                     else:
                         hist.append(("user", txt))
                         rep = chat_service.chat(txt, hist[:-1])
+                        t_after_chat = time.time()
+                        log(f"[PERF] Chat: {t_after_chat - t_before_chat:.2f}s", level='info', color=bcolors.OKCYAN)
                         hist.append(("assistant", rep))
                         hist = hist[-8:]
                         speaker.say_quick(rep)
@@ -361,7 +398,8 @@ def main():
     _tablet_ui = classTablet(
         session=s, logger=_logger, port=8088, version_provider=SysVersion.get,
         mic_toggle_callback=toggle_micro, listener=cap, speaker=speaker, vision_service=vision_service,
-        start_chat_callback=start_chat, stop_chat_callback=stop_chat, get_chat_status_callback=get_chat_status
+        start_chat_callback=start_chat, stop_chat_callback=stop_chat, get_chat_status_callback=get_chat_status,
+        anim=anim
     )
     _tablet_ui.start(show=True)
 
@@ -391,6 +429,9 @@ def main():
             time.sleep(1)
     except KeyboardInterrupt:
         log("\nCtrl+C détecté. Arrêt...", level='info')
+    finally:
+        log("Arrêt des services...", level='info')
+        autolife_stop_event.set()
         stop_chat()
 
 

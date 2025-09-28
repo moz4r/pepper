@@ -58,8 +58,9 @@ export function render(root){
   const version_display = el.querySelector('#naoqi-version-display');
 
   async function refresh() {
-    apps_tbody.innerHTML = '<tr><td colspan="4">Chargement...</td></tr>';
-    anims_tbody.innerHTML = '<tr><td colspan="4">Chargement...</td></tr>';
+    const spinnerRow = '<tr><td colspan="4" style="text-align: center; padding: 20px;"><div class="spinner" style="margin: 0 auto;"></div></td></tr>';
+    apps_tbody.innerHTML = spinnerRow;
+    anims_tbody.innerHTML = spinnerRow;
     try {
       const r = await api.appsList();
       if (r.error) {

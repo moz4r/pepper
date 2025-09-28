@@ -53,6 +53,7 @@ import time
 import socket
 import threading
 import traceback
+import traceback
 import subprocess
 import collections
 from io import BytesIO
@@ -93,10 +94,11 @@ except Exception:
 # WebServer
 # ————————————————————————————————————————————————————————————
 class WebServer(object):
-    def __init__(self, root_dir='.', session=None, logger=None):
+    def __init__(self, root_dir='.', session=None, logger=None, anim=None):
         self._root_dir = os.path.abspath(root_dir)
         self.session = session  # qi.Session ou objet mock
         self._logger = logger or (lambda *a, **k: None)
+        self.anim = anim
 
         self.heartbeat_callback = None
 
@@ -113,6 +115,7 @@ class WebServer(object):
         # Cache pour les natures de comportements
         self._behavior_nature_cache = {}
         self._last_installed_behaviors = []
+        self._running_behaviors = set()
 
         # Hooks internes
         self._last_heartbeat = 0
@@ -955,6 +958,7 @@ class WebServer(object):
                 parent._logger("[apps] Starting _apps_list processing...", level='debug')
 
                 try:
+                    # --- Version Detection ---
                     t_start_version = time.time()
                     try:
                         al_system = self.server.session.service('ALSystem')
@@ -963,52 +967,111 @@ class WebServer(object):
                         pass # Keep default version
                     parent._logger(f"[apps] Version detection took: {time.time() - t_start_version:.4f}s", level='debug')
 
-                    major_version, minor_version = map(int, naoqi_version_str.split('.')[:2])
-                    is_runnable_supported = (major_version == 2 and minor_version < 9)
-                    parent._logger(f"[apps] NAOqi version: {naoqi_version_str}, runnable_supported: {is_runnable_supported}", level='info')
+                    major_version, minor_version = (0,0)
+                    try:
+                        version_parts = naoqi_version_str.split('.')
+                        major_version = int(version_parts[0]) if len(version_parts) > 0 else 0
+                        minor_version = int(version_parts[1]) if len(version_parts) > 1 else 0
+                    except Exception:
+                        pass # Keep default 0.0
 
-                    t_start_behaviors = time.time()
-                    bm = self.server.session.service('ALBehaviorManager')
-                    if bm:
-                        current_installed_behaviors = bm.getInstalledBehaviors()
-                        running_behaviors = bm.getRunningBehaviors()
-                        parent._logger(f"[apps] getInstalledBehaviors and getRunningBehaviors took: {time.time() - t_start_behaviors:.4f}s. Found {len(current_installed_behaviors)} behaviors.", level='debug')
+                    # --- Logic Branch ---
+                    if major_version < 2 or (major_version == 2 and minor_version < 9):
+                        # --- NAOqi < 2.9 Logic (using ALBehaviorManager) ---
+                        parent._logger("[apps] Using NAOqi < 2.9 logic (ALBehaviorManager)", level='info')
+                        bm = self.server.session.service('ALBehaviorManager')
+                        if bm:
+                            current_installed_behaviors = bm.getInstalledBehaviors()
+                            running_behaviors = set(bm.getRunningBehaviors()) # Use a set for faster lookups
+                            
+                            # Cache invalidation logic for natures
+                            if sorted(current_installed_behaviors) != sorted(parent._last_installed_behaviors):
+                                parent._logger("[apps] Installed behaviors changed. Clearing nature cache.", level='info')
+                                parent._behavior_nature_cache = {}
+                                parent._last_installed_behaviors = current_installed_behaviors[:]
 
-                        # Cache invalidation logic
-                        if sorted(current_installed_behaviors) != sorted(parent._last_installed_behaviors):
-                            parent._logger("[apps] Installed behaviors changed. Clearing nature cache.", level='info')
-                            parent._behavior_nature_cache = {}
-                            parent._last_installed_behaviors = current_installed_behaviors[:] # Make a copy
+                            for name in sorted(current_installed_behaviors):
+                                nature = parent._behavior_nature_cache.get(name)
+                                if nature is None:
+                                    nature = bm.getBehaviorNature(name)
+                                    parent._behavior_nature_cache[name] = nature
 
-                        t_start_loop = time.time()
-                        for name in sorted(current_installed_behaviors):
-                            nature = parent._behavior_nature_cache.get(name)
-                            if nature is None: # Not in cache, fetch it
-                                t_start_nature = time.time()
-                                nature = bm.getBehaviorNature(name)
-                                parent._behavior_nature_cache[name] = nature # Store in cache
-                                parent._logger(f"[apps] getBehaviorNature for '{name}' took: {time.time() - t_start_nature:.4f}s (uncached)", level='debug')
-                            else:
-                                parent._logger(f"[apps] getBehaviorNature for '{name}' from cache.", level='debug')
-
-                            behavior_info = {
-                                'name': name,
-                                'status': 'running' if name in running_behaviors else 'stopped',
-                                'runnable': is_runnable_supported,
-                                'nature': nature
-                            }
-                            if nature in ['interactive', 'solitary']:
-                                applications.append(behavior_info)
-                            else:
-                                animations.append(behavior_info)
-                        parent._logger(f"[apps] Behavior loop took: {time.time() - t_start_loop:.4f}s", level='debug')
+                                behavior_info = {
+                                    'name': name,
+                                    'status': 'running' if name in running_behaviors else 'stopped',
+                                    'runnable': True, # Assumed runnable on older systems
+                                    'nature': nature
+                                }
+                                if nature in ['interactive', 'solitary']:
+                                    applications.append(behavior_info)
+                                else:
+                                    animations.append(behavior_info)
+                        else:
+                            error_msg = "ALBehaviorManager service not found."
                     else:
-                        error_msg = "ALBehaviorManager service not found."
-                        parent._logger(f"[apps] {error_msg}", level='error')
+                        # --- NAOqi >= 2.9 Logic (using pm.db and classAnimation) ---
+                        parent._logger("[apps] Using NAOqi 2.9+ logic (pm.db and classAnimation)", level='info')
+                        
+                        # Get applications from pm.db
+                        db_path = '/home/nao/.local/share/PackageManager/pm.db'
+                        # For local testing, use the example file at the root
+                        if not os.path.exists(db_path):
+                            db_path = os.path.join(os.path.dirname(os.path.abspath(__file__)), '..', '..', 'pm.db')
+
+                        if os.path.exists(db_path):
+                            try:
+                                import sqlite3
+                                conn = sqlite3.connect(db_path)
+                                cursor = conn.cursor()
+                                cursor.execute("SELECT uuid FROM packages")
+                                packages = cursor.fetchall()
+                                conn.close()
+
+                                running_behaviors = parent._running_behaviors
+
+                                for pkg in packages:
+                                    name = pkg[0]
+                                    if not name: continue
+
+                                    behavior_info = {
+                                        'name': name,
+                                        'status': 'running' if name in running_behaviors else 'stopped',
+                                        'runnable': False, # Per user request for 2.9
+                                        'nature': 'interactive'
+                                    }
+                                    applications.append(behavior_info)
+
+                            except Exception as e:
+                                error_msg = f"Error reading pm.db: {e}"
+                                parent._logger(f"[apps] {error_msg}", level='error')
+                        else:
+                            error_msg = "pm.db not found."
+
+                        # Get animations from classAnimation
+                        if parent.anim:
+                            try:
+                                anim_list = parent.anim.get_installed_animations()
+                                bm = parent.svc('ALBehaviorManager')
+                                running_behaviors = set(bm.getRunningBehaviors()) if bm else set()
+                                for anim_name in anim_list:
+                                    behavior_info = {
+                                        'name': anim_name,
+                                        'status': 'running' if anim_name in running_behaviors else 'stopped',
+                                        'runnable': True,
+                                        'nature': 'animation'
+                                    }
+                                    animations.append(behavior_info)
+                            except Exception as e:
+                                error_msg_anim = f"Error getting animations: {e}"
+                                if error_msg:
+                                    error_msg += f"; {error_msg_anim}"
+                                else:
+                                    error_msg = error_msg_anim
+                                parent._logger(f"[apps] {error_msg_anim}", level='error')
 
                 except Exception as e:
                     error_msg = f"Error listing applications: {e}"
-                    parent._logger(f"[apps] {error_msg}", level='error')
+                    parent._logger(f"[apps] {error_msg} {traceback.format_exc()}", level='error')
 
                 parent._logger(f"[apps] _apps_list total processing took: {time.time() - t_start_total:.4f}s", level='info')
                 self._json(200, {
@@ -1024,10 +1087,22 @@ class WebServer(object):
                     self._send_503('missing app name')
                     return
                 try:
-                    bm = self.server.session.service('ALBehaviorManager')
-                    if not bm.isBehaviorRunning(name):
-                        bm.runBehavior(name)
-                    self._json(200, {'ok': True})
+                    # Check if it's an animation for 2.9
+                    is_animation = parent.anim and parent.anim.is_29 and name in parent.anim.get_installed_animations()
+
+                    if is_animation:
+                        player = self.server.session.service('ALAnimationPlayer')
+                        animation_name = "animations/" + name
+                        parent._logger(f"Running animation '{animation_name}' with ALAnimationPlayer.", level='info')
+                        player.run(animation_name)
+                        self._json(200, {'ok': True})
+                    else:
+                        bm = self.server.session.service('ALBehaviorManager')
+                        if not bm.isBehaviorRunning(name):
+                            parent._logger(f"Starting behavior '{name}' non-blockingly.", level='debug')
+                            bm.startBehavior(name)
+                            parent._running_behaviors.add(name)
+                        self._json(200, {'ok': True})
                 except Exception as e:
                     self._send_503(f'apps/start error for {name}: {e}')
 
@@ -1040,6 +1115,7 @@ class WebServer(object):
                     bm = self.server.session.service('ALBehaviorManager')
                     if bm.isBehaviorRunning(name):
                         bm.stopBehavior(name)
+                        parent._running_behaviors.discard(name)
                     self._json(200, {'ok': True})
                 except Exception as e:
                     self._send_503(f'apps/stop error for {name}: {e}')

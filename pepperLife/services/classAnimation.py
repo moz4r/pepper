@@ -194,14 +194,14 @@ class Animation(object):
 
             emit = self._emit29(chosen)
             self.last_resolved = emit
-            head = "^start(%s)^wait(%s) " % (emit, emit)
+            head = "^start(%s) " % (emit)
             return self.RE_START.sub(head, t, count=1)
 
         # ----- 2.7 -----
         key = self._ensure_anim27_prefix(self._strip_dot_slash(raw))
         if key in self.installed_keys:
             self.last_resolved = key
-            head = "^start(%s)^wait(%s) " % (key, key)
+            head = "^start(%s) " % (key)
             return self.RE_START.sub(head, t, count=1)
 
         fam = self.RE_SUFFIX_NUM.sub("_", key)
@@ -209,10 +209,10 @@ class Animation(object):
         if resolved:
             self.log("[ANIM] ^start(%s) -> %s" % (raw, resolved), level='info')
             self.last_resolved = resolved
-            head = "^start(%s)^wait(%s) " % (resolved, resolved)
+            head = "^start(%s) " % (resolved)
             return self.RE_START.sub(head, t, count=1)
 
         self.log("[ANIM] clé inconnue: %s" % key, level='warning')
         self.last_resolved = key
-        head = "^start(%s)^wait(%s) " % (key, key)
+        head = "^start(%s) " % (key)
         return self.RE_START.sub(head, t, count=1)

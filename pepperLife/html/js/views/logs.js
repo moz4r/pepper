@@ -15,13 +15,18 @@ export function render(root){
   const nInput = el.querySelector('#n');
 
   async function refresh() {
-    pre.textContent = 'Chargement...';
+    pre.innerHTML = '<div class="spinner" style="margin: 20px auto;"></div>';
     try {
       const n = parseInt(nInput.value, 10) || 200;
       const d = await api.logsTail(n);
       // La réponse peut être un objet {text: "..."} ou un tableau de lignes
       const logText = Array.isArray(d) ? d.join('\n') : (d.text || '');
-      pre.textContent = logText || '(Logs vides)';
+      if (logText) {
+        const ansi_up = new AnsiUp();
+        pre.innerHTML = ansi_up.ansi_to_html(logText);
+      } else {
+        pre.textContent = '(Logs vides)';
+      }
     } catch(e) {
       pre.textContent = `Erreur au chargement des logs: ${e.message || e}`;
     }

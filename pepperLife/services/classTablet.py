@@ -14,7 +14,7 @@ class classTablet(object):
     """
     def __init__(self, session=None, logger=None, port=8088,
                  version_text=u"dev", version_file=None, version_provider=None, mic_toggle_callback=None, listener=None, speaker=None, vision_service=None,
-                 start_chat_callback=None, stop_chat_callback=None, get_chat_status_callback=None):
+                 start_chat_callback=None, stop_chat_callback=None, get_chat_status_callback=None, anim=None):
         self.session = session
         self._log = logger or (lambda msg, **k: print(msg))
         self.port = int(port)
@@ -30,7 +30,7 @@ class classTablet(object):
         self.script_dir = os.path.dirname(os.path.abspath(__file__))
         self.ui_dir = os.path.join(os.path.dirname(self.script_dir), "html")
         
-        self.web_server = WebServer(root_dir=self.ui_dir, session=self.session, logger=self._log)
+        self.web_server = WebServer(root_dir=self.ui_dir, session=self.session, logger=self._log, anim=anim)
         self.web_server.mic_toggle_callback = self.mic_toggle_callback
         self.web_server.listener = self.listener
         self.web_server.speaker = self.speaker

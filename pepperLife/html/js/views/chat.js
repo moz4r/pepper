@@ -78,17 +78,20 @@ export function init() {
     getChatStatus();
 
     // --- Event Listeners ---
-    document.getElementById('start-basic-btn').addEventListener('click', () => {
-        api.startChat('basic').then(getChatStatus);
-    });
+    const setupButton = (id, action) => {
+        document.getElementById(id).addEventListener('click', (e) => {
+            const button = e.target;
+            button.disabled = true;
+            const spinner = document.createElement('span');
+            spinner.className = 'inline-spinner';
+            button.appendChild(spinner);
+            action().then(getChatStatus);
+        });
+    };
 
-    document.getElementById('start-gpt-btn').addEventListener('click', () => {
-        api.startChat('gpt').then(getChatStatus);
-    });
-
-    document.getElementById('stop-chat-btn').addEventListener('click', () => {
-        api.stopChat().then(getChatStatus);
-    });
+    setupButton('start-basic-btn', () => api.startChat('basic'));
+    setupButton('start-gpt-btn', () => api.startChat('gpt'));
+    setupButton('stop-chat-btn', () => api.stopChat());
 }
 
 export function cleanup() {
