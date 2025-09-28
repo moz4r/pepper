@@ -155,6 +155,8 @@ def check_requirements():
 
 
 
+import threading
+
 def main():
     check_requirements()
 
@@ -164,11 +166,10 @@ def main():
     from services.classSpeak import Speaker
     from services.classASRFilters import is_noise_utterance, is_recent_duplicate
     from services.classAudioUtils import avgabs
-
     from services.classTablet import classTablet
     from services.classSystem import version as SysVersion
     from services.classSTT import STT
-    from services.classChat import Chat
+    from services.classGpt4o import Gpt4o
     from services.classVision import Vision
 
     load_config()
@@ -182,18 +183,11 @@ def main():
 
     IP = CONFIG['connection']['ip']
     PORT = CONFIG['connection']['port']
-    STT_MODEL = CONFIG['openai']['stt_model']
-    CHAT_MODEL = CONFIG['openai']['chat_model']
     BLACKLIST_STRICT = set(CONFIG['asr_filters']['blacklist_strict'])
 
-    # --- VAD Profiles --- 
     VAD_PROFILES = {
-        # level: (start_multiplier, stop_multiplier, silhold)
-        1: (1.3, 1.05, 0.8), # Très sensible
-        2: (1.6, 1.1, 0.6),
-        3: (2.0, 1.2, 0.5),  # Normal (défaut)
-        4: (2.5, 1.3, 0.4),
-        5: (3.0, 1.5, 0.3)   # Peu sensible
+        1: (1.3, 1.05, 0.8), 2: (1.6, 1.1, 0.6), 3: (2.0, 1.2, 0.5),
+        4: (2.5, 1.3, 0.4), 5: (3.0, 1.5, 0.3)
     }
     vad_level = CONFIG['audio'].get('vad_level', 3)
     start_mult, stop_mult, SILHOLD = VAD_PROFILES.get(vad_level, VAD_PROFILES[3])
@@ -201,59 +195,162 @@ def main():
     s = None
     try:
         import qi
-        app = qi.Application(["PepperMain", "--qi-url=tcp://%s:%d" % (IP, PORT)])
+        app = qi.Application(["PepperMain", f"--qi-url=tcp://{IP}:{PORT}"])
         app.start()
         s = app.session
         log("[OK] NAOqi", level='info', color=bcolors.OKGREEN)
-
-        system_service = s.service("ALSystem")
-        robot_version = system_service.systemVersion()
-        # Désactiver sorties autonomes ALDialog
-        try:
-            dialog = s.service("ALDialog")
-            try:
-                dialog.setSolitaryMode(False)
-            except:
-                pass
-            try:
-                dialog.setSpeakingMovementEnabled(True)
-            except:
-                pass
-            try:
-                dialog.stopDialog()
-            except:
-                pass
-        except Exception as e:
-            log("ALDialog non disponible: %s" % e, level='warning')
-
+        robot_version = s.service("ALSystem").systemVersion()
         log(f"Version de NAOqi: {robot_version}", level='info')
-
-    except ImportError as e:
-        log(f"Le module 'qi' est introuvable: {e}", level='error', color=bcolors.FAIL)
-        sys.exit(2)
     except Exception as e:
-        log(f"Erreur lors de la connexion à NAOqi ou à l'un de ses services: {e}", level='error', color=bcolors.FAIL)
-        if s is None:
-            raise Exception("Impossible de se connecter à NAOqi.")
-        else:
-            raise Exception("Impossible de se connecter à un service NAOqi.")
+        log(f"Erreur de connexion à NAOqi: {e}", level='error', color=bcolors.FAIL)
+        sys.exit(1)
 
-    # --- Initialisation de l'animation (avant le prompt) --------------------
     anim = Animation(s, log, robot_version=robot_version)
-    anim.health_check()  # Log "X animations chargées"
+    anim.health_check()
 
-    # --- Prompt dynamique (en mémoire, sans fichiers) --------------------------
     try:
-        base_prompt = Chat.load_system_prompt(CONFIG.get('openai', {}), APP_DIR)
-        prompt_text, n_animations = build_system_prompt_in_memory(base_prompt, anim)
+        base_prompt = Gpt4o.load_system_prompt(CONFIG.get('openai', {}), APP_DIR)
+        prompt_text, _ = build_system_prompt_in_memory(base_prompt, anim)
         SYSTEM_PROMPT = prompt_text
     except Exception as e:
         log(f"[PROMPT] Génération dynamique échouée: {e}", level='warning', color=bcolors.WARNING)
-        SYSTEM_PROMPT = Chat.load_system_prompt(CONFIG.get('openai', {}), APP_DIR)  # fallback existant
+        SYSTEM_PROMPT = Gpt4o.load_system_prompt(CONFIG.get('openai', {}), APP_DIR)
 
     leds = PepperLEDs(s, _logger)
     cap = Listener(s, CONFIG['audio'], _logger)
+    beh = BehaviorManager(s, _logger, default_speed=0.5)
+    tts = s.service("ALAnimatedSpeech")
+    speaker = Speaker(tts, leds, cap, beh, anim=anim)
+    vision_service = Vision(CONFIG, s, _logger)
+
     atexit.register(cap.close)
+    atexit.register(vision_service.stop_camera)
+
+    chat_thread = None
+    chat_stop_event = None
+
+    def run_chat_loop(stop_event):
+        log("Démarrage du thread du chatbot GPT...", level='info')
+        stt_service = STT(CONFIG, _logger)
+        chat_service = Gpt4o(CONFIG, system_prompt=SYSTEM_PROMPT)
+
+        api_key = CONFIG['openai'].get('api_key')
+        if api_key:
+            os.environ['OPENAI_API_KEY'] = api_key
+        if not os.getenv("OPENAI_API_KEY"):
+            log("Clé OpenAI absente.", level='error', color=bcolors.FAIL)
+            speaker.say_quick("Clé OpenAI absente.")
+            return
+
+        vision_service.start_camera()
+        cap.warmup(min_chunks=8, timeout=2.0)
+        hist, hist_vision = [], []
+
+        base = CONFIG['audio'].get('override_base_sensitivity')
+        if not base:
+            log("Calibration du bruit (2s)...", level='info')
+            vals = [avgabs(b"".join(cap.mon[-8:]) if cap.mon else b"") for _ in range(50)]
+            base = int(sum(vals) / max(1, len(vals)))
+            log(f"Calibration terminée. Bruit de base: {base}", level='info')
+        
+        START = max(4, int(base * start_mult))
+        STOP = max(3, int(base * stop_mult))
+
+        speaker.say_quick("Je suis réveillé !")
+        leds.idle()
+
+        try:
+            while not stop_event.is_set():
+                if not cap.is_micro_enabled() or cap.is_speaking():
+                    time.sleep(0.1)
+                    continue
+
+                vol = avgabs(b"".join(cap.mon[-8:]) if cap.mon else b"")
+                if vol < START:
+                    time.sleep(0.05)
+                    continue
+                
+                leds.listening_recording()
+                cap.start()
+                t0 = time.time(); last = t0
+                while time.time() - t0 < 5.0:
+                    recent = b"".join(cap.mon[-3:]) if cap.mon else b""
+                    fr = recent[-320:] if len(recent) >= 320 else recent
+                    e = avgabs(fr)
+                    if e >= STOP:
+                        last = time.time()
+                    if time.time() - last > SILHOLD:
+                        break
+                    time.sleep(0.02)
+                wav = cap.stop(STOP)
+                if not wav:
+                    leds.idle()
+                    continue
+
+                try:
+                    txt = stt_service.stt(wav)
+                    log("[ASR] " + str(txt), level='info')
+                    if not txt or is_noise_utterance(txt, BLACKLIST_STRICT) or is_recent_duplicate(txt):
+                        leds.idle()
+                        continue
+
+                    leds.processing()
+                    if vision_service._utterance_triggers_vision(txt.lower()):
+                        png_bytes = vision_service.get_png()
+                        if png_bytes:
+                            _tablet_ui.set_last_capture(png_bytes)
+                            _tablet_ui.show_last_capture_on_tablet()
+                            rep = vision_service.vision_chat(txt, png_bytes, hist_vision)
+                            hist_vision.extend([("user", txt), ("assistant", rep)])
+                            hist_vision = hist_vision[-6:]
+                            speaker.say_quick(rep)
+                        else:
+                            speaker.say_quick("Je n'ai pas réussi à prendre de photo.")
+                    else:
+                        hist.append(("user", txt))
+                        rep = chat_service.chat(txt, hist[:-1])
+                        hist.append(("assistant", rep))
+                        hist = hist[-8:]
+                        speaker.say_quick(rep)
+
+                except Exception as e:
+                    log("[ERR] " + str(e), level='error', color=bcolors.FAIL)
+                    speaker.say_quick("Petit pépin réseau, on réessaie.")
+        finally:
+            log("Arrêt du thread du chatbot.", level='info')
+            leds.idle()
+
+    def start_chat(mode='gpt'):
+        nonlocal chat_thread, chat_stop_event
+        if chat_thread and chat_thread.is_alive():
+            log("Un chat est déjà en cours, arrêt avant de changer de mode.", level='warning')
+            stop_chat()
+
+        if mode == 'gpt':
+            chat_stop_event = threading.Event()
+            chat_thread = threading.Thread(target=run_chat_loop, args=(chat_stop_event,))
+            chat_thread.daemon = True
+            chat_thread.start()
+        else:
+            log("Mode 'basic' activé.", level='info')
+            speaker.say_quick("Mode de base activé.")
+            leds.idle()
+
+    def stop_chat():
+        nonlocal chat_thread, chat_stop_event
+        if chat_thread and chat_thread.is_alive():
+            log("Demande d'arrêt du thread du chatbot...", level='info')
+            chat_stop_event.set()
+            chat_thread.join(timeout=5)
+        chat_thread = None
+        log("Chatbot arrêté. Passage en mode de base.", level='info')
+        speaker.say_quick("Le chatbot est arrêté.")
+        leds.idle()
+
+    def get_chat_status():
+        is_running = chat_thread and chat_thread.is_alive()
+        current_mode = 'gpt' if is_running else 'basic'
+        return {'mode': current_mode, 'is_running': is_running}
 
     def toggle_micro():
         is_enabled = cap.toggle_micro()
@@ -261,211 +358,40 @@ def main():
             leds.idle()
         return is_enabled
 
-    beh = BehaviorManager(s, _logger, default_speed=0.5)
-
-    tts = s.service("ALAnimatedSpeech")
-    speaker = Speaker(tts, leds, cap, beh, anim=anim)
-
-    vision_service = Vision(CONFIG, s, _logger)
-
     _tablet_ui = classTablet(
-        session=s,
-        logger=_logger,
-        port=8088,
-        version_provider=SysVersion.get,
-        mic_toggle_callback=toggle_micro,
-        listener=cap,
-        speaker=speaker,
-        vision_service=vision_service
+        session=s, logger=_logger, port=8088, version_provider=SysVersion.get,
+        mic_toggle_callback=toggle_micro, listener=cap, speaker=speaker, vision_service=vision_service,
+        start_chat_callback=start_chat, stop_chat_callback=stop_chat, get_chat_status_callback=get_chat_status
     )
     _tablet_ui.start(show=True)
 
     beh.boot()
-
-    stt_service = STT(CONFIG)
-    chat_service = Chat(CONFIG, system_prompt=SYSTEM_PROMPT)
-    vision_service = Vision(CONFIG, s, _logger)
-
-    api_key = CONFIG['openai'].get('api_key')
-    if api_key:
-        os.environ['OPENAI_API_KEY'] = api_key
-
-    if not os.getenv("OPENAI_API_KEY"):
-        log("Clé OpenAI absente. Veuillez la définir dans config.json ou via la variable d'environnement OPENAI_API_KEY.", level='error', color=bcolors.FAIL)
-        tts.say("Clé OpenAI absente.")
-        return
-
-    leds.idle()
-
-    vision_service.start_camera()
-    _tablet_ui.cam = vision_service
-    atexit.register(vision_service.stop_camera)
-
-    cap.warmup(min_chunks=8, timeout=2.0)
-
-    hist = []            # historique chat texte
-    hist_vision = []     # historique dédié à la vision (optionnel)
-
-    # Calibration bruit ou override
-    base = CONFIG['audio'].get('override_base_sensitivity')
-    if base is None or base == '':
-        log("Calibration du bruit (2s)...", level='info')
-        t0 = time.time(); vals = []
-        while time.time() - t0 < 2.0:
-            time.sleep(0.04)
-            vals.append(avgabs(b"".join(cap.mon[-8:]) if cap.mon else b""))
-        base = int(sum(vals) / max(1, len(vals)))
-        log(f"Calibration terminée. Niveau de bruit de base: {base}", level='info')
-    else:
-        log(f"Calibration ignorée. Niveau de bruit manuel: {base}", level='info', color=bcolors.WARNING)
-
-    START = max(4, int(base * start_mult))
-    STOP = max(3, int(base * stop_mult))
-    log(f"[VAD] Profil {vad_level}: base={base}, START={START}, STOP={STOP}, SILHOLD={SILHOLD}s", level='debug')
-
-    time.sleep(0.5)
-
-    # Boot options
     if CONFIG.get('boot', {}).get('boot_vieAutonome', True):
-        try:
-            life_service = s.service("ALAutonomousLife")
-            if life_service.getState() == "disabled":
-                life_service.setState("interactive")
-        except Exception as e:
-            log("Impossible de définir la vie autonome: %s" % e, level='error')
-
+        try: s.service("ALAutonomousLife").setState("interactive")
+        except Exception as e: log("Vie autonome échouée: %s" % e, level='error')
     if CONFIG.get('boot', {}).get('boot_reveille', True):
-        try:
-            motion_service = s.service("ALMotion")
-            if not motion_service.robotIsWakeUp():
-                motion_service.wakeUp()
-        except Exception as e:
-            log("Impossible de réveiller le robot: %s" % e, level='error')
-
-    speaker.say_quick("Je suis réveillé !")
-
-    # --- Tracking / BasicAwareness au démarrage ---
+        try: s.service("ALMotion").wakeUp()
+        except Exception as e: log("Réveil échoué: %s" % e, level='error')
     try:
         ba = s.service("ALBasicAwareness")
-        # Modes utiles : "Head", "BodyRotation", "WholeBody"
         ba.setTrackingMode("Head")
-        # Niveaux possibles : "Unengaged", "SemiEngaged", "FullyEngaged"
         ba.setEngagementMode("SemiEngaged")
-        # Active la détection (faces, sons, mouvement, toucher)
         ba.startAwareness()
-        log("[BA] BasicAwareness démarré (tracking=Head, engagement=FullyEngaged)", level='info')
-    except Exception as e:
-        log("[BA] Impossible de démarrer BasicAwareness: %s" % e, level='warning')
+    except Exception as e: log("BasicAwareness échoué: %s" % e, level='warning')
 
-    # Boucle: listen → record → STT → (vision ? chat) → TTS/Actions
+    if CONFIG.get('boot', {}).get('start_chatbot_on_boot', False):
+        start_chat('gpt')
+    else:
+        log("Chatbot non démarré. Interface web disponible.", level='info', color=bcolors.OKGREEN)
+        speaker.say_quick("Je suis prêt.")
+        leds.idle()
+
     try:
         while True:
-            # départ écoute
-            started = False
-            since = None
-            t_wait = time.time()
-            while time.time() - t_wait < 5.0:
-                if cap.is_speaking():
-                    time.sleep(0.05)
-                    continue
-
-                vol = avgabs(b"".join(cap.mon[-8:]) if cap.mon else b"")
-                if vol >= START:
-                    if since is None:
-                        since = time.time()
-                    elif time.time() - since >= 0.15:
-                        started = True
-                        break
-                else:
-                    since = None
-                time.sleep(0.03)
-            if not started:
-                continue
-
-            if not cap.is_micro_enabled():
-                continue
-
-            if cap.is_speaking():
-                continue
-
-            # enregistrement + endpointing agressif
-            cap.start(); t0 = time.time(); last = t0
-            leds.listening_recording()
-            while time.time() - t0 < 5.0:  # Max 5s d'enregistrement
-                recent = b"".join(cap.mon[-3:]) if cap.mon else b""
-                fr = recent[-320:] if len(recent) >= 320 else recent
-                e = avgabs(fr)
-                if e >= STOP:
-                    last = time.time()
-
-                if time.time() - last > SILHOLD:
-                    break
-                time.sleep(0.02)
-
-            wav = cap.stop(STOP)
-            if not wav:
-                continue
-
-            # STT -> Routeur (vision ? chat) -> parler & bouger
-            try:
-                txt = stt_service.stt(wav)
-                log("[ASR] " + str(txt), level='info')
-                if not txt:
-                    continue
-
-                txt_lower = txt.lower()
-
-                # ----- Commandes explicites d'affichage caméra (optionnel) -----
-                if "affiche la caméra" in txt_lower or "affiche le flux" in txt_lower:
-                    log("[VISION] Affichage du flux vidéo...", level='info')
-                    _tablet_ui.show_video_feed()
-                    speaker.say_quick("Voilà ce que je vois en direct.")
-                    continue
-
-                # ----- Déclencheur générique vision (configurable) -----
-                if vision_service._utterance_triggers_vision(txt_lower):
-                    log("[VISION] Déclenchement par triggers-config.", level='info')
-                    png_bytes = vision_service.get_png()
-                    _tablet_ui.set_last_capture(png_bytes)
-                    _tablet_ui.show_last_capture_on_tablet()
-
-                    if not png_bytes:
-                        speaker.say_quick("Je n'ai pas réussi à prendre de photo.")
-                        continue
-
-                    leds.processing()
-                    log("Appel à vision_chat en cours...", level='info')
-                    rep = vision_service.vision_chat(txt, png_bytes, hist_vision)
-                    log(f"Retour de vision_chat. Réponse: '{rep}'", level='info')
-                    log("[GPT-V] " + rep, level='info', color=bcolors.OKCYAN)
-                    speaker.say_quick(rep)
-                    # Historique vision (nettoyé des marqueurs éventuels)
-                    hist_vision.append(("user", txt))
-                    hist_vision.append(("assistant", rep))
-                    # on garde court
-                    hist_vision[:] = hist_vision[-6:]
-                    continue
-
-                # ----- Filtrage bruit / doublons -----
-                if is_noise_utterance(txt, BLACKLIST_STRICT) or is_recent_duplicate(txt):
-                    log("[ASR] filtré (bruit/blacklist): " + txt, level='info', color=bcolors.WARNING)
-                    leds.idle()
-                    continue
-
-                # ----- Chat texte standard -----
-                hist.append(("user", txt)); hist = hist[-8:]
-                leds.processing()
-                rep = chat_service.chat(txt, hist[:-1])
-                log("[GPT] " + rep, level='info', color=bcolors.OKCYAN)
-                speaker.say_quick(rep)
-                hist.append(("assistant", rep))
-                time.sleep(0.5)
-
-            except Exception as e:
-                log("[ERR] " + str(e), level='error', color=bcolors.FAIL)
-                speaker.say_quick("Petit pépin réseau, on réessaie.")
+            time.sleep(1)
     except KeyboardInterrupt:
-        log("\nCtrl+C détecté. Arrêt du programme...", level='info')
+        log("\nCtrl+C détecté. Arrêt...", level='info')
+        stop_chat()
 
 
 if __name__ == "__main__":

@@ -106,6 +106,13 @@ class WebServer(object):
         self.speaker = None
         self.version_text = 'dev'
         self.vision_service = None
+        self.start_chat_callback = None
+        self.stop_chat_callback = None
+        self.get_chat_status_callback = None
+
+        # Cache pour les natures de comportements
+        self._behavior_nature_cache = {}
+        self._last_installed_behaviors = []
 
         # Hooks internes
         self._last_heartbeat = 0
@@ -206,7 +213,12 @@ class WebServer(object):
                     for k, v in headers.items():
                         self.send_header(k, v)
                 self.end_headers()
-                self.wfile.write(data)
+                try:
+                    self.wfile.write(data)
+                except BrokenPipeError:
+                    parent._logger("[WebServer] BrokenPipeError: Client disconnected before response could be sent.", level='warning')
+                except Exception as e:
+                    parent._logger(f"[WebServer] Error writing response: {e}", level='error')
 
             def _text(self, code, text, ctype='text/plain; charset=utf-8'):
                 self.send_response(code)
@@ -244,6 +256,10 @@ class WebServer(object):
                 
                 if path == '/api/system/logs':
                     self._get_system_logs()
+                    return
+
+                if path == '/api/chat/status':
+                    self._get_chat_status()
                     return
 
                 # 1) Heartbeat
@@ -446,11 +462,53 @@ class WebServer(object):
                     self._speak(payload)
                     return
 
+                if path == '/api/chat/start':
+                    self._chat_start(payload)
+                    return
+
+                if path == '/api/chat/stop':
+                    self._chat_stop()
+                    return
+
                 self._send_503('Unknown POST %s' % path)
 
             # ————————————————————————————————
             # Implémentations API
             # ————————————————————————————————
+
+            def _get_chat_status(self):
+                cb = getattr(self.server.parent, 'get_chat_status_callback', None)
+                if cb:
+                    try:
+                        status = cb()
+                        self._json(200, status)
+                    except Exception as e:
+                        self._send_503('get_chat_status failed: %s' % e)
+                else:
+                    self._send_503('get_chat_status callback unavailable')
+
+            def _chat_start(self, payload):
+                cb = getattr(self.server.parent, 'start_chat_callback', None)
+                if cb:
+                    try:
+                        mode = payload.get('mode', 'gpt') # Default to gpt
+                        cb(mode)
+                        self._json(200, {'status': 'ok', 'message': f'Chat start requested in {mode} mode.'})
+                    except Exception as e:
+                        self._send_503('chat_start failed: %s' % e)
+                else:
+                    self._send_503('chat_start callback unavailable')
+
+            def _chat_stop(self):
+                cb = getattr(self.server.parent, 'stop_chat_callback', None)
+                if cb:
+                    try:
+                        cb()
+                        self._json(200, {'status': 'ok', 'message': 'Chat stop requested.'})
+                    except Exception as e:
+                        self._send_503('chat_stop failed: %s' % e)
+                else:
+                    self._send_503('chat_stop callback unavailable')
 
             def _system_shutdown(self):
                 try:
@@ -888,37 +946,77 @@ class WebServer(object):
 
             # ——— Apps ———
             def _apps_list(self):
-                apps = []
+                t_start_total = time.time()
+                applications = []
+                animations = []
                 error_msg = None
+                naoqi_version_str = "0.0"
+                
+                parent._logger("[apps] Starting _apps_list processing...", level='debug')
+
                 try:
-                    store = self.server.session.service('ALStore') if self.server.session else None
-                    if store:
-                        parent._logger("[apps] ALStore service found, using getPackagesInfo().", level='debug')
-                        package_info = store.getPackagesInfo()
-                        for p in package_info or []:
-                            apps.append({
-                                'name': p.get('name') or p.get('uuid'),
-                                'status': p.get('status')
-                            })
+                    t_start_version = time.time()
+                    try:
+                        al_system = self.server.session.service('ALSystem')
+                        naoqi_version_str = al_system.systemVersion()
+                    except Exception:
+                        pass # Keep default version
+                    parent._logger(f"[apps] Version detection took: {time.time() - t_start_version:.4f}s", level='debug')
+
+                    major_version, minor_version = map(int, naoqi_version_str.split('.')[:2])
+                    is_runnable_supported = (major_version == 2 and minor_version < 9)
+                    parent._logger(f"[apps] NAOqi version: {naoqi_version_str}, runnable_supported: {is_runnable_supported}", level='info')
+
+                    t_start_behaviors = time.time()
+                    bm = self.server.session.service('ALBehaviorManager')
+                    if bm:
+                        current_installed_behaviors = bm.getInstalledBehaviors()
+                        running_behaviors = bm.getRunningBehaviors()
+                        parent._logger(f"[apps] getInstalledBehaviors and getRunningBehaviors took: {time.time() - t_start_behaviors:.4f}s. Found {len(current_installed_behaviors)} behaviors.", level='debug')
+
+                        # Cache invalidation logic
+                        if sorted(current_installed_behaviors) != sorted(parent._last_installed_behaviors):
+                            parent._logger("[apps] Installed behaviors changed. Clearing nature cache.", level='info')
+                            parent._behavior_nature_cache = {}
+                            parent._last_installed_behaviors = current_installed_behaviors[:] # Make a copy
+
+                        t_start_loop = time.time()
+                        for name in sorted(current_installed_behaviors):
+                            nature = parent._behavior_nature_cache.get(name)
+                            if nature is None: # Not in cache, fetch it
+                                t_start_nature = time.time()
+                                nature = bm.getBehaviorNature(name)
+                                parent._behavior_nature_cache[name] = nature # Store in cache
+                                parent._logger(f"[apps] getBehaviorNature for '{name}' took: {time.time() - t_start_nature:.4f}s (uncached)", level='debug')
+                            else:
+                                parent._logger(f"[apps] getBehaviorNature for '{name}' from cache.", level='debug')
+
+                            behavior_info = {
+                                'name': name,
+                                'status': 'running' if name in running_behaviors else 'stopped',
+                                'runnable': is_runnable_supported,
+                                'nature': nature
+                            }
+                            if nature in ['interactive', 'solitary']:
+                                applications.append(behavior_info)
+                            else:
+                                animations.append(behavior_info)
+                        parent._logger(f"[apps] Behavior loop took: {time.time() - t_start_loop:.4f}s", level='debug')
                     else:
-                        parent._logger("[apps] ALStore not found, falling back to ALPackageManager.", level='debug')
-                        pm = self.server.session.service('ALPackageManager') if self.server.session else None
-                        if pm:
-                            package_info = pm.packages()
-                            for p in package_info or []:
-                                apps.append({
-                                    'name': p.get('name') or p.get('uuid'),
-                                    'state': p.get('state')
-                                })
-                        else:
-                            error_msg = "Neither ALStore nor ALPackageManager could be found."
-                            parent._logger(f"[apps] {error_msg}", level='error')
+                        error_msg = "ALBehaviorManager service not found."
+                        parent._logger(f"[apps] {error_msg}", level='error')
 
                 except Exception as e:
                     error_msg = f"Error listing applications: {e}"
                     parent._logger(f"[apps] {error_msg}", level='error')
 
-                self._json(200, {'apps': apps, 'error': error_msg})
+                parent._logger(f"[apps] _apps_list total processing took: {time.time() - t_start_total:.4f}s", level='info')
+                self._json(200, {
+                    'applications': applications, 
+                    'animations': animations, 
+                    'error': error_msg, 
+                    'naoqi_version': naoqi_version_str
+                })
 
             def _apps_start(self, payload):
                 name = payload.get('name')
@@ -926,24 +1024,12 @@ class WebServer(object):
                     self._send_503('missing app name')
                     return
                 try:
-                    # ALLauncher permet startApplication(uuid/name) sur certaines versions
-                    launcher = self.server.session.service('ALLauncher') if self.server.session else None
-                    if launcher:
-                        try:
-                            launcher.launchApp(name)
-                            self._json(200, {'ok': True})
-                            return
-                        except Exception:
-                            pass
-                    # Fallback PackageManager
-                    pm = self.server.session.service('ALPackageManager') if self.server.session else None
-                    if pm and hasattr(pm, 'startApp'):  # certaines versions
-                        pm.startApp(name)
-                        self._json(200, {'ok': True})
-                        return
-                    self._send_503('No launcher available')
+                    bm = self.server.session.service('ALBehaviorManager')
+                    if not bm.isBehaviorRunning(name):
+                        bm.runBehavior(name)
+                    self._json(200, {'ok': True})
                 except Exception as e:
-                    self._send_503('apps/start error: %s' % e)
+                    self._send_503(f'apps/start error for {name}: {e}')
 
             def _apps_stop(self, payload):
                 name = payload.get('name')
@@ -951,19 +1037,12 @@ class WebServer(object):
                     self._send_503('missing app name')
                     return
                 try:
-                    launcher = self.server.session.service('ALLauncher') if self.server.session else None
-                    if launcher and hasattr(launcher, 'stopApp'):
-                        launcher.stopApp(name)
-                        self._json(200, {'ok': True})
-                        return
-                    pm = self.server.session.service('ALPackageManager') if self.server.session else None
-                    if pm and hasattr(pm, 'stopApp'):
-                        pm.stopApp(name)
-                        self._json(200, {'ok': True})
-                        return
-                    self._send_503('No stop method available')
+                    bm = self.server.session.service('ALBehaviorManager')
+                    if bm.isBehaviorRunning(name):
+                        bm.stopBehavior(name)
+                    self._json(200, {'ok': True})
                 except Exception as e:
-                    self._send_503('apps/stop error: %s' % e)
+                    self._send_503(f'apps/stop error for {name}: {e}')
 
             # ——— ALMemory ———
             def _memory_search(self, parsed):

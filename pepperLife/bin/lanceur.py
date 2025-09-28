@@ -65,10 +65,33 @@ class LauncherService:
 
         self.logs.clear()
         script_path = '/home/nao/.local/share/PackageManager/apps/pepperlife/pepperLife.py'
-        runner_path = '/home/nao/.local/share/PackageManager/apps/python3nao/bin/runpy3.sh'
         
-        if not self.is_python_runner_installed():
-            err_msg = "Le lanceur python3 est introuvable."
+        # DÃ©finir le chemin par dÃ©faut du lanceur
+        runner_path = '/home/nao/.local/share/PackageManager/apps/python3nao/bin/runpy3.sh'
+
+        try:
+            # RÃ©cupÃ©rer la version de NAOqi
+            system_service = self.session.service("ALSystem")
+            naoqi_version = system_service.systemVersion()
+            self.logger.info("Version de NAOqi dÃ©tectÃ©e: {}".format(naoqi_version))
+
+            # VÃ©rifier si la version est 2.5
+            if "2.5" in naoqi_version:
+                self.logger.info("NAOqi 2.5 dÃ©tectÃ©. Utilisation du lanceur local.")
+                # Chemin vers le runpy3.sh local du projet
+                local_runner_path = '/home/nao/.local/share/PackageManager/apps/pepperlife/bin/runpy3.sh'
+                if os.path.exists(local_runner_path):
+                    runner_path = local_runner_path
+                else:
+                    self.logger.warning("Le lanceur local pour NAOqi 2.5 est introuvable Ã : {}. Utilisation du lanceur par dÃ©faut.".format(local_runner_path))
+            else:
+                self.logger.info("Utilisation du lanceur par dÃ©faut pour NAOqi 2.9+.")
+
+        except Exception as e:
+            self.logger.error("Impossible de rÃ©cupÃ©rer la version de NAOqi: {}. Utilisation du lanceur par dÃ©faut.".format(e))
+
+        if not os.path.exists(runner_path):
+            err_msg = "Le lanceur python3 est introuvable Ã : {}".format(runner_path)
             self.logger.error(err_msg)
             self.logs.append("ERREUR: {}".format(err_msg))
             return False

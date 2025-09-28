@@ -1,10 +1,10 @@
 # -*- coding: utf-8 -*-
-# classChat.py - Chat logic using OpenAI
+# classGpt4o.py - Chat logic using OpenAI GPT-4o
 
 from openai import OpenAI
 import os
 
-class Chat(object):
+class Gpt4o(object):
     @staticmethod
     def _read_text_file(path):
         try:
@@ -19,7 +19,7 @@ class Chat(object):
         # 1) on lit le fichier de base
         base_prompt = ""
         base_prompt_path = os.path.join(base_dir, "prompts", "system_prompt.txt")
-        content = Chat._read_text_file(base_prompt_path)
+        content = Gpt4o._read_text_file(base_prompt_path)
         if content is not None:
             base_prompt = content.strip()
         else:

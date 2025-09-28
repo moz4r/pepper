@@ -54,6 +54,7 @@
   "boot": {
     "_comment": "Configuration pour le démarrage du robot.",
     "boot_vieAutonome": true,
-    "boot_reveille": true
+    "boot_reveille": true,
+    "start_chatbot_on_boot": false
   }
 }

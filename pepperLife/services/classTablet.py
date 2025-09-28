@@ -13,7 +13,8 @@ class classTablet(object):
     Permet de fournir la version via un provider (callable) ou un fichier.
     """
     def __init__(self, session=None, logger=None, port=8088,
-                 version_text=u"dev", version_file=None, version_provider=None, mic_toggle_callback=None, listener=None, speaker=None, vision_service=None):
+                 version_text=u"dev", version_file=None, version_provider=None, mic_toggle_callback=None, listener=None, speaker=None, vision_service=None,
+                 start_chat_callback=None, stop_chat_callback=None, get_chat_status_callback=None):
         self.session = session
         self._log = logger or (lambda msg, **k: print(msg))
         self.port = int(port)
@@ -35,6 +36,9 @@ class classTablet(object):
         self.web_server.speaker = self.speaker
         self.web_server.heartbeat_callback = self.update_heartbeat
         self.web_server.vision_service = vision_service
+        self.web_server.start_chat_callback = start_chat_callback
+        self.web_server.stop_chat_callback = stop_chat_callback
+        self.web_server.get_chat_status_callback = get_chat_status_callback
 
         self.tablet = None
         self.last_capture = None

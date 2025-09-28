@@ -1,4 +1,4 @@
-# PepperLife 0.5
+# PepperLife 0.6
 
 ![pepperlife_edited](https://github.com/user-attachments/assets/fba8f19b-ef94-4246-bdc5-7bd2d5027dfb)
 
@@ -13,15 +13,18 @@ Pipeline léger **NAOqi + OpenAI** pour **Pepper** :
 - 🔇 Anti-larsen & anti-bruit (blacklist + heuristiques)
 - 🧩 Architecture par classes normalisées : `classLEDs.py`, `classAnimation.py`, `classRobotBehavior.py`
 - ✔️ Interface web de contrôle et de diagnostique du robot
+- 🤖 **Système de Chatbot Modulaire** : Le robot démarre avec un canal de base et le chatbot GPT-4o peut être activé/désactivé à la demande via l'interface web.
+- 📱 **Nouvel onglet "Chat"** : Gérez facilement les modes de conversation du robot (canal de base ou GPT-4o).
+- 🚀 **Gestion Améliorée des Applications** : L'onglet "Applications" liste désormais séparément les applications et les animations, avec une meilleure compatibilité des versions NAOqi et des indicateurs d'état précis.
 
 ---
 
 ## Prérequis
 
-- **Pepper NAOqi 2.7 -> 2.9**
+- **Pepper NAOqi 2.5 -> 2.9**
 - **Python 3** (sur Pepper via l app `python3nao`, ou PC avec SDK NAOqi)
 - **Clé OpenAI** (`OPENAI_API_KEY`)
-- Services NAOqi : **ALAudioDevice**, **ALTextToSpeech**, **ALLeds**, **ALMotion**, **ALRobotPosture**, **ALAnimatedSpeech**, **ALVideoDevice**
+- Services NAOqi : **ALAudioDevice**, **ALTextToSpeech**, **ALLeds**, **ALMotion**, **ALRobotPosture**, **ALAnimatedSpeech**, **ALVideoDevice**, **ALBehaviorManager**
 
 ```bash
 
@@ -31,12 +34,12 @@ Pipeline léger **NAOqi + OpenAI** pour **Pepper** :
 
 Il y a deux méthodes pour installer l'application sur le robot.
 
-### Méthode 1 : Choregraphe (pour NAOqi ~2.7)
+### Méthode 1 : Choregraphe
 
 1.  Ouvrez Choregraphe et connectez-vous à votre robot.
 2.  Sélectionnez le fichier `pepperlife.pkg` à installer.
 
-### Méthode 2 : Ligne de commande (pour NAOqi 2.9/2.7)
+### Méthode 2 : Ligne de commande (pour NAOqi )
 
 1.  Transférez le fichier `pepperlife.pkg` sur le robot (par exemple dans `/home/nao/`) via `scp` ou `sftp`.
 2.  Connectez-vous au robot en SSH.
@@ -57,11 +60,11 @@ Au premier lancement, le script essaiera d'installer les dépendances Python (co
 
 ### Utilisation
 
-Une fois l'application installée, le service de lancement démarre automatiquement avec le robot.
+Une fois l'application installée, le service de lancement démarre automatiquement avec le robot. Par défaut, seul le serveur web et le canal de base sont actifs.
 
 1.  Ouvrez un navigateur web sur un ordinateur connecté au même réseau que le robot.
 2.  Rendez-vous à l'adresse suivante, en remplaçant `<IP_DU_ROBOT>` par l'adresse IP de votre Pepper :
     ```
     http://<IP_DU_ROBOT>:8080
     ```
-3.  Vous accéderez à l'interface web qui vous permettra de démarrer, arrêter et configurer l'application PepperLife.
+3.  Vous accéderez à l'interface web qui vous permettra de démarrer, arrêter et configurer l'application PepperLife, y compris l'activation/désactivation des modes de chatbot et la gestion des applications/animations.

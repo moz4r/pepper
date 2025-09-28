@@ -48,4 +48,8 @@ export const api = {
   configGetUser: ()=> jget('/api/config/user'),
   configSetUser: (data)=> jpost('/api/config/user', data),
   logsTail: (n)=> jget('/api/logs/tail?n='+(n||200)),
+  // Chat API
+  getChatStatus: () => jget('/api/chat/status'),
+  startChat: (mode) => jpost('/api/chat/start', { mode: mode }),
+  stopChat: () => jpost('/api/chat/stop'),
 };

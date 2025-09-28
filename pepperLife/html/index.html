@@ -34,6 +34,7 @@ const Posture = await import(`./js/views/posture.js${bust}`);
 const Camera = await import(`./js/views/camera.js${bust}`);
 const Logs = await import(`./js/views/logs.js${bust}`);
 const Audio = await import(`./js/views/audio.js${bust}`);
+const Chat = await import(`./js/views/chat.js${bust}`);
 
 const routes = {
   '': Home, '#/': Home,
@@ -47,12 +48,14 @@ const routes = {
   '#/camera': Camera,
   '#/logs': Logs,
   '#/audio': Audio,
+  '#/chat': Chat,
 };
 
 const navItems = [
   ['Accueil', '#/'],
   ['Hardware', '#/hardware'],
   ['Audio', '#/audio'],
+  ['Chat', '#/chat'],
   ['Mémoire', '#/memory'],
   ['Réglages', '#/settings'],
   ['Tethering', '#/tethering'],
