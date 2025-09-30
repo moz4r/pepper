@@ -1,5 +1,3 @@
-import { api } from '../api.js'; // Pour les infos système du backend principal (port 8088)
-
 // API pour le lanceur lui-même (servi sur le même port que la page, 8080)
 const launcherApi = {
   getStatus: () => fetch('/api/launcher/status').then(r => r.json()),
@@ -127,6 +125,11 @@ const template = `
   </div>
 `;
 
+export function render(root, api) {
+  root.innerHTML = template;
+  init(api);
+}
+
 let statusPoller = null;
 
 function showNavTabs(show) {
@@ -165,7 +168,7 @@ function updateRobotStatus(status, data = null) {
     if (versionEl) versionEl.textContent = data.version || 'N/A';
 }
 
-async function checkLauncherStatus() {
+async function checkLauncherStatus(api) {
   const pythonRunnerStatus = document.getElementById('python-runner-status');
   const statusDot = document.getElementById('status-dot');
   const statusText = document.getElementById('status-text');
@@ -213,11 +216,7 @@ async function checkLauncherStatus() {
   }
 }
 
-export function render(root) {
-  root.innerHTML = template;
-}
-
-export function init() {
+export function init(api) {
   const startBtn = document.getElementById('start-btn');
   const stopBtn = document.getElementById('stop-btn');
   const powerIcon = document.getElementById('power-icon');
@@ -228,13 +227,13 @@ export function init() {
   startBtn.addEventListener('click', async () => {
     document.getElementById('status-text').textContent = 'Démarrage en cours...';
     await launcherApi.start();
-    setTimeout(checkLauncherStatus, 1500);
+    setTimeout(() => checkLauncherStatus(api), 1500);
   });
 
   stopBtn.addEventListener('click', async () => {
     document.getElementById('status-text').textContent = 'Arrêt en cours...';
     await launcherApi.stop();
-    setTimeout(checkLauncherStatus, 1500);
+    setTimeout(() => checkLauncherStatus(api), 1500);
   });
 
   powerIcon.addEventListener('click', () => {
@@ -268,10 +267,10 @@ export function init() {
   });
 
   // Lancer la vérification initiale
-  checkLauncherStatus();
+  checkLauncherStatus(api);
   
   // Polling pour le statut
-  statusPoller = setInterval(checkLauncherStatus, 5000);
+  statusPoller = setInterval(() => checkLauncherStatus(api), 5000);
 }
 
 export function cleanup() {

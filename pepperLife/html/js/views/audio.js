@@ -15,8 +15,7 @@ const template = `
         <label for="lang">Langue du robot (TTS)</label>
         <div class="input-group">
             <select id="lang" style="width: 100%;">
-                <option value="French">Français</option>
-                <option value="English">Anglais</option>
+                <option>Chargement...</option>
             </select>
             <button class="btn" id="save-lang">Appliquer</button>
         </div>
@@ -56,6 +55,7 @@ async function updateVuMeter() {
 
 export function render(root) {
   root.innerHTML = template;
+  init();
 }
 
 export function init() {
@@ -67,14 +67,28 @@ export function init() {
   const feedbackLang = document.getElementById('feedback-lang');
 
   // --- Language Logic ---
-  const loadLang = async () => {
+  const loadAndPopulateLanguages = async () => {
     try {
-      const settings = await api.settingsGet();
-      if (settings && settings.language) {
-        langSelect.value = settings.language;
+      feedbackLang.textContent = 'Chargement...';
+      const data = await api.getTtsLanguages();
+      langSelect.innerHTML = ''; // Clear options
+      
+      if (data && data.available) {
+        data.available.forEach(lang => {
+          const option = document.createElement('option');
+          option.value = lang;
+          option.textContent = lang;
+          langSelect.appendChild(option);
+        });
       }
+      
+      if (data && data.current) {
+        langSelect.value = data.current;
+      }
+      feedbackLang.textContent = '';
     } catch(e) {
       feedbackLang.textContent = `Erreur chargement`;
+      langSelect.innerHTML = '<option>Erreur</option>';
     }
   };
 
@@ -82,7 +96,7 @@ export function init() {
     const newLang = langSelect.value;
     feedbackLang.textContent = 'Enregistrement...';
     try {
-      await api.settingsSet({language: newLang});
+      await api.setTtsLanguage(newLang);
       feedbackLang.textContent = 'Enregistré !';
       setTimeout(() => feedbackLang.textContent = '', 2000);
     } catch(e) {
@@ -116,7 +130,7 @@ export function init() {
   });
 
   // --- Initial State & Pollers ---
-  loadLang();
+  loadAndPopulateLanguages();
   api.volumeState().then(data => { 
     if(volumeSlider) volumeSlider.value = data.volume; 
   }).catch(()=>{});

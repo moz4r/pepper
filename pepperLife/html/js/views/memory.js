@@ -1,7 +1,6 @@
 
-import {api} from '../api.js';
 
-export function render(root){
+export function render(root, api){
   const el = document.createElement('div');
   el.className = 'grid-memory'; // Custom grid for this view
   el.innerHTML = `

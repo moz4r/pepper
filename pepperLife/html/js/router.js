@@ -1,4 +1,4 @@
-export function router(routes){
+export function router(routes, api){
   const app = document.getElementById('app');
   let currentModule = null;
 
@@ -14,11 +14,9 @@ export function router(routes){
 
     app.innerHTML = '';
     if (typeof mod.render === 'function') {
-      mod.render(app);
+      mod.render(app, api);
     }
-    if (typeof mod.init === 'function') {
-      mod.init();
-    }
+
     setActive();
   }
 

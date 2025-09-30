@@ -1,4 +1,4 @@
-import {api} from '../api.js';
+
 
 // Helper to render the top-level summary
 function renderKVs(data) {
@@ -20,7 +20,7 @@ function renderKVs(data) {
 }
 
 // Main render function for the hardware view
-export function render(root){
+export function render(root, api){
   const box = document.createElement('section');
   box.className='card span-12';
   box.innerHTML = `

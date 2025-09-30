@@ -27,9 +27,9 @@ export const api = {
   volumeSet: (v)=> jpost('/api/volume/set',{volume:v}),
   micToggle: ()=> jget('/api/mic_toggle'),
   lifeState: ()=> jget('/api/autonomous_life/state'),
-  lifeToggle: ()=> jpost('/api/autonomous_life/toggle'),
+  lifeSetState: (st)=> jpost('/api/autonomous_life/set_state', {state: st}),
   postureState: ()=> jget('/api/posture/state'),
-  postureToggle: ()=> jpost('/api/posture/toggle'),
+  postureSetState: (st)=> jpost('/api/posture/set_state', {state: st}),
   // Extended endpoints to implement in classWebServer (or proxy to qi):
   wifiScan: ()=> jget('/api/wifi/scan'),
   wifiConnect: (ssid, psk)=> jpost('/api/wifi/connect',{ssid, psk}),
@@ -52,4 +52,7 @@ export const api = {
   getChatStatus: () => jget('/api/chat/status'),
   startChat: (mode) => jpost('/api/chat/start', { mode: mode }),
   stopChat: () => jpost('/api/chat/stop'),
+  // TTS Language
+  getTtsLanguages: () => jget('/api/tts/languages'),
+  setTtsLanguage: (lang) => jpost('/api/tts/set_language', { language: lang }),
 };

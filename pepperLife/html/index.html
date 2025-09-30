@@ -31,7 +31,6 @@ const Settings = await import(`./js/views/settings.js${bust}`);
 const Tethering = await import(`./js/views/tethering.js${bust}`);
 const Apps = await import(`./js/views/apps.js${bust}`);
 const Life = await import(`./js/views/life.js${bust}`);
-const Posture = await import(`./js/views/posture.js${bust}`);
 const Camera = await import(`./js/views/camera.js${bust}`);
 const Logs = await import(`./js/views/logs.js${bust}`);
 const Audio = await import(`./js/views/audio.js${bust}`);
@@ -45,7 +44,6 @@ const routes = {
   '#/tethering': Tethering,
   '#/apps': Apps,
   '#/life': Life,
-  '#/posture': Posture,
   '#/camera': Camera,
   '#/logs': Logs,
   '#/audio': Audio,
@@ -61,8 +59,7 @@ const navItems = [
   ['Réglages', '#/settings'],
   ['Tethering', '#/tethering'],
   ['Apps', '#/apps'],
-  ['Vie', '#/life'],
-  ['Posture', '#/posture'],
+  ['État', '#/life'],
   ['Caméra', '#/camera'],
   ['Logs', '#/logs'],
 ];
@@ -76,6 +73,6 @@ navItems.forEach(([t, href])=>{
   nav.appendChild(a);
 });
 
-router(routes);
+router(routes, api);
 </script>
 </body></html>

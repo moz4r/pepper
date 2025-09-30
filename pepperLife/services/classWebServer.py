@@ -377,6 +377,10 @@ class WebServer(object):
                     self._logs_tail(parsed)
                     return
 
+                if path == '/api/tts/languages':
+                    self._get_tts_languages()
+                    return
+
                 # 5) Fichiers statiques (cam.png, last_capture.png, admin/…)
                 return SimpleHTTPRequestHandler.do_GET(self)
 
@@ -437,6 +441,14 @@ class WebServer(object):
                     self._posture_toggle()
                     return
 
+                if path == '/api/autonomous_life/set_state':
+                    self._life_set_state(payload)
+                    return
+
+                if path == '/api/posture/set_state':
+                    self._posture_set_state(payload)
+                    return
+
                 if path == '/api/wifi/connect':
                     self._wifi_connect(payload)
                     return
@@ -463,6 +475,10 @@ class WebServer(object):
 
                 if path == '/api/speak':
                     self._speak(payload)
+                    return
+
+                if path == '/api/tts/set_language':
+                    self._set_tts_language(payload)
                     return
 
                 if path == '/api/chat/start':
@@ -705,8 +721,12 @@ class WebServer(object):
             def _get_life_state(self):
                 try:
                     life = self.server.session.service('ALAutonomousLife') if self.server.session else None
-                    st = life.getState() if life else 'unknown'
-                    self._json(200, {'state': st})
+                    if not life:
+                        self._send_503('ALAutonomousLife unavailable')
+                        return
+                    current_state = life.getState()
+                    all_states = ["solitary", "interactive", "disabled", "safeguard"]
+                    self._json(200, {'current_state': current_state, 'all_states': all_states})
                 except Exception as e:
                     self._send_503('life/state error: %s' % e)
 
@@ -746,6 +766,39 @@ class WebServer(object):
                     self._json(200, {'is_awake': bool(motion.robotIsWakeUp())})
                 except Exception as e:
                     self._send_503('posture/toggle error: %s' % e)
+
+            def _life_set_state(self, payload):
+                try:
+                    life = self.server.session.service('ALAutonomousLife') if self.server.session else None
+                    if not life:
+                        self._send_503('ALAutonomousLife unavailable')
+                        return
+                    state = payload.get('state')
+                    if state and state in ["solitary", "interactive", "disabled", "safeguard"]:
+                        life.setState(state)
+                        self._json(200, {'ok': True, 'state': life.getState()})
+                    else:
+                        self._json(400, {'error': 'Invalid or missing state parameter'})
+                except Exception as e:
+                    self._send_503('life/set_state error: %s' % e)
+
+            def _posture_set_state(self, payload):
+                try:
+                    motion = self.server.session.service('ALMotion') if self.server.session else None
+                    if not motion:
+                        self._send_503('ALMotion unavailable')
+                        return
+                    state = payload.get('state')
+                    if state == 'awake':
+                        motion.wakeUp()
+                    elif state == 'rest':
+                        motion.rest()
+                    else:
+                        self._json(400, {'error': 'Invalid or missing state parameter'})
+                        return
+                    self._json(200, {'ok': True, 'is_awake': motion.robotIsWakeUp()})
+                except Exception as e:
+                    self._send_503('posture/set_state error: %s' % e)
 
             def _get_hardware_info(self):
                 try:
@@ -1078,7 +1131,8 @@ class WebServer(object):
                     'applications': applications, 
                     'animations': animations, 
                     'error': error_msg, 
-                    'naoqi_version': naoqi_version_str
+                    'naoqi_version': naoqi_version_str,
+                    'running_behaviors': list(running_behaviors)
                 })
 
             def _apps_start(self, payload):
@@ -1226,6 +1280,45 @@ class WebServer(object):
                         self._send_503('speak error: %s' % e)
                 else:
                     self._send_503('Speaker not available')
+
+            def _get_tts_languages(self):
+                try:
+                    tts = self.server.session.service('ALTextToSpeech') if self.server.session else None
+                    if not tts:
+                        parent._logger('[tts] ALTextToSpeech service unavailable', level='error')
+                        self._send_503('ALTextToSpeech unavailable')
+                        return
+                    
+                    parent._logger('[tts] Fetching available languages...', level='debug')
+                    available_langs = tts.getAvailableLanguages()
+                    parent._logger(f'[tts] Available languages found: {available_langs}', level='debug')
+
+                    current_lang = tts.getLanguage()
+                    parent._logger(f'[tts] Current language is: {current_lang}', level='info')
+                    
+                    self._json(200, {
+                        'available': available_langs,
+                        'current': current_lang
+                    })
+                except Exception as e:
+                    parent._logger(f'[tts] Error fetching languages: {e}', level='error')
+                    self._send_503('tts/languages error: %s' % e)
+
+            def _set_tts_language(self, payload):
+                try:
+                    tts = self.server.session.service('ALTextToSpeech') if self.server.session else None
+                    if not tts:
+                        self._send_503('ALTextToSpeech unavailable')
+                        return
+                    
+                    lang = payload.get('language')
+                    if lang:
+                        tts.setLanguage(lang)
+                        self._json(200, {'ok': True, 'language': lang})
+                    else:
+                        self._json(400, {'error': 'missing language parameter'})
+                except Exception as e:
+                    self._send_503('tts/set_language error: %s' % e)
 
             # ——— Logs ———
             def _logs_tail(self, parsed):

@@ -33,28 +33,37 @@ class Listener(object):
         self.name = "PepperASR_%d_%d" % (int(time.time()), random.randint(100,999))
         s.registerService(self.name, self)
 
-        self.sr = 16000  # Fréquence d'échantillonnage
+        self.sr = 16000
         self.preroll_chunks = audio_config.get('preroll_chunks', 16)
         self.agc_target = audio_config['agc_target']
         self.log = logger
         self.microEnabled = {"on": True}
+        self.is_subscribed = False
 
-        # État partagé et synchronisation
         self.lock = threading.Lock()
         self.speaking = False
         self.speech_stop_time = 0
         self.speech_cooldown = audio_config.get('speech_cooldown', 2.0)
 
-        # Abonnement à l'état du TTS
         self.memory = s.service("ALMemory")
         self.tts_subscriber = self.memory.subscriber("ALTextToSpeech/Status")
         self.anim_subscriber = self.memory.subscriber("ALAnimatedSpeech/Status")
         self.anim_subscriber_id = self.anim_subscriber.signal.connect(self.on_tts_status)
         self.tts_subscriber_id = self.tts_subscriber.signal.connect(self.on_tts_status)
 
+        self.mon, self.pre, self.rec = [], [], []
+        self.on = False # This is for recording state
+        self.maxpre = self.preroll_chunks
+        self.log("[AUDIO] Listener initialized: %s" % self.name, level='info')
+
+    def start(self):
+        """Subscribes to the audio device."""
+        if self.is_subscribed:
+            return
+        self.log("[AUDIO] Subscribing to ALAudioDevice...", level='info')
         freed = _free_audio_slots(self.ad)
         if freed:
-            print("[AUDIO] Unsub orphelins:", ", ".join(freed))
+            self.log("[AUDIO] Unsubscribed orphan clients: %s" % ", ".join(freed), level='warning')
             time.sleep(0.15)
 
         self.ad.setClientPreferences(self.name, self.sr, 1, 0)
@@ -67,11 +76,20 @@ class Listener(object):
                 _free_audio_slots(self.ad)
                 time.sleep(0.05 * (2 ** k))
         if last_err: raise last_err
+        self.is_subscribed = True
+        self.log("[AUDIO] Subscribed to ALAudioDevice.", level='info')
 
-        self.mon, self.pre, self.rec = [], [], []
-        self.on = False
-        self.maxpre = self.preroll_chunks
-        print("[AUDIO] %dk mono — %s" % (self.sr//1000, self.name))
+    def stop(self):
+        """Unsubscribes from the audio device."""
+        if not self.is_subscribed:
+            return
+        self.log("[AUDIO] Unsubscribing from ALAudioDevice...", level='info')
+        try:
+            self.ad.unsubscribe(self.name)
+            self.is_subscribed = False
+            self.log("[AUDIO] Unsubscribed from ALAudioDevice.", level='info')
+        except Exception as e:
+            self.log(f"[AUDIO] Error unsubscribing: {e}", level='error')
 
     def on_tts_status(self, status):
         if not isinstance(status, (list, tuple)) or len(status) < 2:
@@ -80,15 +98,12 @@ class Listener(object):
         with self.lock:
             if status_string == 'started':
                 self.speaking = True
-                # purge anti-larsen (sécurise)
                 self.mon[:] = []
                 self.pre[:] = []
             elif status_string == 'done':
                 self.speaking = False
                 self.speech_stop_time = time.time()
-                # IMPORTANT : re-semence du pré-roll avec le “ring buffer” récent
                 self.pre = list(self.mon[-self.maxpre:])
-
 
     def toggle_micro(self):
         self.microEnabled["on"] = not self.microEnabled["on"]
@@ -115,7 +130,6 @@ class Listener(object):
             try: buf = bytes(buf)
             except: return
 
-        # Verrouiller pour lire l'état de la parole en toute sécurité
         with self.lock:
             is_speaking = self.speaking
             stop_time = self.speech_stop_time
@@ -127,7 +141,6 @@ class Listener(object):
         if is_speaking or (time_since_stop < self.speech_cooldown) or not micro_on:
             return
 
-        # Verrouiller à nouveau pour modifier les tampons audio
         with self.lock:
             self.mon.append(buf)
             self.pre.append(buf)
@@ -136,18 +149,17 @@ class Listener(object):
             if is_recording: self.rec.append(buf)
 
     def get_last_audio_chunk(self):
-        """Récupère le dernier chunk audio de manière thread-safe."""
         with self.lock:
             if not self.mon:
                 return b''
             return self.mon[-1]
 
-    def start(self):
+    def start_recording(self):
         self.rec = list(self.pre)
         self.on = True
-        print("[REC] START pre=", len(self.rec))
+        self.log("[REC] START pre=%d" % len(self.rec), level='debug')
 
-    def stop(self, stop_thr):
+    def stop_recording(self, stop_thr):
         self.on = False
         if not self.rec: return None
         raw = b"".join(self.rec); self.rec = []
@@ -163,16 +175,12 @@ class Listener(object):
         return buf.getvalue()
 
     def close(self):
+        self.stop()
         try:
             self.tts_subscriber.signal.disconnect(self.tts_subscriber_id)
         except Exception:
             pass
-        try: self.ad.unsubscribe(self.name)
-        except Exception: pass
-
-        # Bool direct (si dispo)
         try:
-            self.isspk_sub = self.memory.subscriber("ALTextToSpeech/IsSpeaking")
-            self.isspk_sub_id = self.isspk_sub.signal.connect(lambda v: self._set_speaking(bool(v)))
+            self.anim_subscriber.signal.disconnect(self.anim_subscriber_id)
         except Exception:
-            self.isspk_sub = None; self.isspk_sub_id = None
+            pass

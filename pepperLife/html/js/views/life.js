@@ -1,41 +1,156 @@
 
-import {api} from '../api.js';
-export function render(root){
-  const el = document.createElement('section'); el.className='card span-12';
-  el.innerHTML = `<div class="title">Vie autonome</div>
-  <div class="row">
-    <span id="st" class="status">…</span>
-    <button class="btn" id="tg">Basculer l'état</button>
-  </div>`;
-  root.appendChild(el);
 
-  const statusEl = el.querySelector('#st');
+const template = `
+  <style>
+    .state-grid { display: grid; grid-template-columns: 1fr 1fr; gap: 2rem; }
+    .control-group { margin-bottom: 1.5rem; }
+    .control-group label { display: block; margin-bottom: 0.5rem; font-weight: bold; }
+    .control-group .input-group { display: flex; gap: 8px; align-items: center;}
+    .control-group select { flex-grow: 1; }
+    .status-indicator {
+        display: inline-block;
+        padding: 0.25em 0.6em;
+        font-size: 75%;
+        font-weight: 700;
+        line-height: 1;
+        text-align: center;
+        white-space: nowrap;
+        vertical-align: baseline;
+        border-radius: 0.25rem;
+        color: #fff;
+    }
+    .status-indicator.ok { background-color: #28a745; }
+    .status-indicator.off { background-color: #dc3545; }
+    .status-indicator.warn { background-color: #ffc107; color: #000;}
+  </style>
+  <div class="card span-12">
+    <div class="title">État du Robot</div>
+    <div class="state-grid">
+        <!-- Autonomous Life Section -->
+        <div class="control-group">
+            <label for="life-select">Vie Autonome</label>
+            <div class="input-group">
+                <select id="life-select"><option>Chargement...</option></select>
+                <button class="btn" id="life-save-btn">Appliquer</button>
+            </div>
+            <p style="margin-top: 0.5rem;">État actuel: <span id="life-current-status" class="status-indicator">...</span></p>
+        </div>
 
-  async function refresh(){
+        <!-- Posture Section -->
+        <div class="control-group">
+            <label for="posture-select">Posture</label>
+            <div class="input-group">
+                <select id="posture-select">
+                    <option value="awake">Debout</option>
+                    <option value="rest">Au repos</option>
+                </select>
+                <button class="btn" id="posture-save-btn">Appliquer</button>
+            </div>
+            <p style="margin-top: 0.5rem;">État actuel: <span id="posture-current-status" class="status-indicator">...</span></p>
+        </div>
+    </div>
+  </div>
+`;
+
+export function render(root, api){
+  root.innerHTML = template;
+  init(api);
+}
+
+export function init(api) {
+  // --- Elements ---
+  const lifeSelect = document.getElementById('life-select');
+  const lifeSaveBtn = document.getElementById('life-save-btn');
+  const lifeStatus = document.getElementById('life-current-status');
+  
+  const postureSelect = document.getElementById('posture-select');
+  const postureSaveBtn = document.getElementById('posture-save-btn');
+  const postureStatus = document.getElementById('posture-current-status');
+
+  // --- Autonomous Life Logic ---
+  async function refreshLife() {
     try {
-      const d = await api.lifeState();
-      const state = d.state || '?';
-      statusEl.textContent = state;
-      statusEl.classList.remove('ok', 'off');
-      if (state === 'disabled') {
-        statusEl.classList.add('off');
-      } else if (state === 'interactive' || state === 'solitary') {
-        statusEl.classList.add('ok');
+      const data = await api.lifeState();
+      
+      // Populate dropdown if not already populated
+      if (lifeSelect.options.length <= 1) {
+        lifeSelect.innerHTML = '';
+        data.all_states.forEach(state => {
+          const option = document.createElement('option');
+          option.value = state;
+          option.textContent = state.charAt(0).toUpperCase() + state.slice(1);
+          lifeSelect.appendChild(option);
+        });
       }
-    } catch(e) {
-      statusEl.textContent = 'Erreur';
-      statusEl.classList.remove('ok', 'off');
+
+      // Set current state
+      lifeSelect.value = data.current_state;
+      lifeStatus.textContent = data.current_state;
+      lifeStatus.className = 'status-indicator'; // reset
+      if (data.current_state === 'disabled') {
+        lifeStatus.classList.add('off');
+      } else if (data.current_state === 'interactive') {
+        lifeStatus.classList.add('ok');
+      } else {
+        lifeStatus.classList.add('warn');
+      }
+
+    } catch (e) {
+      lifeStatus.textContent = 'Erreur';
+      lifeStatus.className = 'status-indicator off';
     }
   }
 
-  el.querySelector('#tg').addEventListener('click', async()=>{
+  lifeSaveBtn.addEventListener('click', async () => {
+    const newState = lifeSelect.value;
+    lifeSaveBtn.disabled = true;
+    lifeSaveBtn.textContent = '...';
     try {
-      await api.lifeToggle();
-      await refresh();
-    } catch(e) {
-      alert(e.message || e);
+      await api.lifeSetState(newState);
+      await refreshLife();
+    } catch (e) {
+      alert(`Erreur lors du changement d'état de vie: ${e.message || e}`);
+    } finally {
+      lifeSaveBtn.disabled = false;
+      lifeSaveBtn.textContent = 'Appliquer';
     }
   });
 
-  refresh();
+  // --- Posture Logic ---
+  async function refreshPosture() {
+    try {
+      const data = await api.postureState();
+      const isAwake = data.is_awake;
+      postureSelect.value = isAwake ? 'awake' : 'rest';
+      postureStatus.textContent = isAwake ? 'Debout' : 'Au repos';
+      postureStatus.className = 'status-indicator'; // reset
+      postureStatus.classList.add(isAwake ? 'ok' : 'off');
+    } catch (e) {
+      postureStatus.textContent = 'Erreur';
+      postureStatus.className = 'status-indicator off';
+    }
+  }
+
+  postureSaveBtn.addEventListener('click', async () => {
+    const newState = postureSelect.value;
+    postureSaveBtn.disabled = true;
+    postureSaveBtn.textContent = '...';
+    try {
+      await api.postureSetState(newState);
+      await refreshPosture();
+    } catch (e) {
+      alert(`Erreur lors du changement de posture: ${e.message || e}`);
+    } finally {
+      postureSaveBtn.disabled = false;
+      postureSaveBtn.textContent = 'Appliquer';
+    }
+  });
+
+  // --- Initial Load ---
+  refreshLife();
+  refreshPosture();
+}
+
+export function cleanup() {
+  // No timers or pollers to clean up in this view
 }

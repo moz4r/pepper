@@ -28,7 +28,11 @@ const template = `
 </div>
 `;
 
+let isViewActive = false;
+
 function updateStatus(status) {
+    if (!isViewActive) return;
+
     const statusEl = document.getElementById('current-chat-status');
     const startGptBtn = document.getElementById('start-gpt-btn');
     const startBasicBtn = document.getElementById('start-basic-btn');
@@ -71,9 +75,12 @@ async function getChatStatus() {
 export function render() {
     const app = document.getElementById('app');
     app.innerHTML = template;
+    init();
 }
 
 export function init() {
+    isViewActive = true;
+
     // Initial status check
     getChatStatus();
 
@@ -95,5 +102,5 @@ export function init() {
 }
 
 export function cleanup() {
-    // Rien à nettoyer pour l'instant
+    isViewActive = false;
 }

@@ -8,7 +8,10 @@ function renderState(state) {
 }
 
 // Helper to render a row
-function renderRow(app) {
+function renderRow(app, runningBehaviors) {
+    const isRunning = runningBehaviors && runningBehaviors.includes(app.name);
+    const rowClass = isRunning ? 'running-row' : '';
+
     let buttons = 'Non supporté';
     if (app.runnable) {
         buttons = `
@@ -17,7 +20,7 @@ function renderRow(app) {
         `;
     }
     return `
-      <tr>
+      <tr class="${rowClass}">
         <td>${app.name}</td>
         <td><span class="nature-tag">${app.nature || 'N/A'}</span></td>
         <td>${renderState(app.status)}</td>
@@ -31,6 +34,21 @@ export function render(root){
   const el = document.createElement('section');
   el.className = 'card span-12';
   el.innerHTML = `
+    <style>
+      .table {
+        background-color: white;
+        color: black;
+      }
+      .table tbody tr:nth-child(odd) {
+        background-color: #f2f2f2;
+      }
+      .table tbody tr:nth-child(even) {
+        background-color: #e6e6e6;
+      }
+      .running-row {
+        background-color: #A5D6A7 !important;
+      }
+    </style>
     <div class="title">Gestionnaire d'applications</div>
     <div class="row">
         <button class="btn" id="refresh-apps">Rafraîchir la liste</button>
@@ -39,17 +57,17 @@ export function render(root){
 
     <h3 style="margin-top: 20px;">Applications Principales</h3>
     <p style="margin-top: -10px; opacity: 0.8;">Comportements de haut niveau (nature interactive ou solitary).</p>
-    <table class="table">
+    <div style="overflow-x: auto;"><table class="table">
         <thead><tr><th>Nom</th><th>Nature</th><th>État</th><th>Actions</th></tr></thead>
         <tbody id="apps-tb"></tbody>
-    </table>
+    </table></div>
 
     <h3 style="margin-top: 20px;">Animations & Comportements</h3>
     <p style="margin-top: -10px; opacity: 0.8;">Comportements de plus bas niveau (ex: gestes, dialogues simples).</p>
-    <table class="table">
+    <div style="overflow-x: auto;"><table class="table">
         <thead><tr><th>Nom</th><th>Nature</th><th>État</th><th>Actions</th></tr></thead>
         <tbody id="anims-tb"></tbody>
-    </table>
+    </table></div>
   `;
   root.appendChild(el);
 
@@ -71,18 +89,20 @@ export function render(root){
       
       version_display.textContent = `NAOqi v${r.naoqi_version || 'inconnue'}`;
 
+      const runningBehaviors = r.running_behaviors || [];
+
       // Populate Applications
       if (!r.applications || r.applications.length === 0) {
         apps_tbody.innerHTML = '<tr><td colspan="4">Aucune application principale trouvée.</td></tr>';
       } else {
-        apps_tbody.innerHTML = r.applications.map(renderRow).join('');
+        apps_tbody.innerHTML = r.applications.map(app => renderRow(app, runningBehaviors)).join('');
       }
 
       // Populate Animations
       if (!r.animations || r.animations.length === 0) {
         anims_tbody.innerHTML = '<tr><td colspan="4">Aucune animation trouvée.</td></tr>';
       } else {
-        anims_tbody.innerHTML = r.animations.map(renderRow).join('');
+        anims_tbody.innerHTML = r.animations.map(app => renderRow(app, runningBehaviors)).join('');
       }
 
     } catch (e) {

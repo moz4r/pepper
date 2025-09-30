@@ -205,19 +205,41 @@ def main():
         log(f"Erreur de connexion à NAOqi: {e}", level='error', color=bcolors.FAIL)
         sys.exit(1)
 
+    al_dialog = s.service("ALDialog")
+
+    chat_thread = None
+    chat_stop_event = None
+
     # --- Watchdog for Autonomous Life ---
     autolife_stop_event = threading.Event()
     def autolife_watchdog(stop_event):
-        log("Démarrage du watchdog pour ALAutonomousLife.", level='info')
+        log("Démarrage du watchdog pour ALAutonomousLife et ALDialog.", level='info')
         try:
             autolife = s.service("ALAutonomousLife")
             while not stop_event.is_set():
                 try:
-                    if autolife.getState() == 'solitary':
-                        log("ALAutonomousLife est passé en 'solitary', restauration vers 'interactive'.", level='warning', color=bcolors.WARNING)
-                        autolife.setState('interactive')
+                    # Check 1: Autonomous Life state (Désactivé pour permettre les actions manuelles)
+                    # currentState = autolife.getState()
+                    # if currentState in ['solitary', 'disabled']:
+                    #     log(f"ALAutonomousLife est en '{currentState}', restauration vers 'interactive'.", level='warning', color=bcolors.WARNING)
+                    #     autolife.setState('interactive')
+                    
+                    # Check 2: ALDialog for basic channel
+                    is_gpt_running = chat_thread and chat_thread.is_alive()
+                    if not is_gpt_running:
+                        try:
+                            # Use getAllLoadedTopics to avoid LED blinking and get a more stable check
+                            loaded_topics = al_dialog.getAllLoadedTopics()
+                            if not loaded_topics:
+                                log("ALDialog n'a aucun sujet de chargé. Réinitialisation complète.", level='warning', color=bcolors.WARNING)
+                                al_dialog.resetAll()
+                                al_dialog.runDialog()
+                        except Exception as e:
+                            log(f"Erreur dans le watchdog ALDialog: {e}", level='error')
+
                 except Exception as e:
-                    log(f"Erreur dans le watchdog ALAutonomousLife: {e}", level='error')
+                    log(f"Erreur dans le watchdog: {e}", level='error')
+                
                 stop_event.wait(2.0) # Use wait for responsive stop
         except Exception as e:
             log(f"Le service ALAutonomousLife n'est pas disponible, le watchdog ne démarrera pas: {e}", level='error')
@@ -263,24 +285,25 @@ def main():
             speaker.say_quick("Clé OpenAI absente.")
             return
 
-        vision_service.start_camera()
-        cap.warmup(min_chunks=8, timeout=2.0)
-        hist, hist_vision = [], []
-
-        base = CONFIG['audio'].get('override_base_sensitivity')
-        if not base:
-            log("Calibration du bruit (2s)...", level='info')
-            vals = [avgabs(b"".join(cap.mon[-8:]) if cap.mon else b"") for _ in range(50)]
-            base = int(sum(vals) / max(1, len(vals)))
-            log(f"Calibration terminée. Bruit de base: {base}", level='info')
-        
-        START = max(4, int(base * start_mult))
-        STOP = max(3, int(base * stop_mult))
-
-        speaker.say_quick("Je suis réveillé !")
-        leds.idle()
-
         try:
+            cap.start() # Subscribe to audio
+            vision_service.start_camera()
+            cap.warmup(min_chunks=8, timeout=2.0)
+            hist, hist_vision = [], []
+
+            base = CONFIG['audio'].get('override_base_sensitivity')
+            if not base:
+                log("Calibration du bruit (2s)...", level='info')
+                vals = [avgabs(b"".join(cap.mon[-8:]) if cap.mon else b"") for _ in range(50)]
+                base = int(sum(vals) / max(1, len(vals)))
+                log(f"Calibration terminée. Bruit de base: {base}", level='info')
+            
+            START = max(4, int(base * start_mult))
+            STOP = max(3, int(base * stop_mult))
+
+            speaker.say_quick("Je suis réveillé !")
+            leds.idle()
+
             while not stop_event.is_set():
                 if not cap.is_micro_enabled() or cap.is_speaking():
                     time.sleep(0.1)
@@ -292,7 +315,7 @@ def main():
                     continue
                 
                 leds.listening_recording()
-                cap.start()
+                cap.start_recording()
                 t0 = time.time(); last = t0
                 while time.time() - t0 < 5.0:
                     recent = b"".join(cap.mon[-3:]) if cap.mon else b""
@@ -304,7 +327,7 @@ def main():
                         break
                     time.sleep(0.02)
                 t_vad_end = time.time()
-                wav = cap.stop(STOP)
+                wav = cap.stop_recording(STOP)
                 t_post_vad = time.time()
                 if not wav:
                     leds.idle()
@@ -356,6 +379,7 @@ def main():
         finally:
             log("Arrêt du thread du chatbot.", level='info')
             leds.idle()
+            cap.stop() # Unsubscribe from audio
 
     def start_chat(mode='gpt'):
         nonlocal chat_thread, chat_stop_event
@@ -364,12 +388,22 @@ def main():
             stop_chat()
 
         if mode == 'gpt':
+            log("Stopping ALDialog for GPT mode.", level='info')
+            try:
+                al_dialog.stopDialog()
+            except Exception as e:
+                log(f"Error stopping ALDialog: {e}", level='error')
             chat_stop_event = threading.Event()
             chat_thread = threading.Thread(target=run_chat_loop, args=(chat_stop_event,))
             chat_thread.daemon = True
             chat_thread.start()
         else:
-            log("Mode 'basic' activé.", level='info')
+            log("Mode 'basic' activé. Reseting and starting ALDialog.", level='info')
+            try:
+                al_dialog.resetAll()
+                al_dialog.runDialog()
+            except Exception as e:
+                log(f"Error starting ALDialog: {e}", level='error')
             speaker.say_quick("Mode de base activé.")
             leds.idle()
 
@@ -380,7 +414,12 @@ def main():
             chat_stop_event.set()
             chat_thread.join(timeout=5)
         chat_thread = None
-        log("Chatbot arrêté. Passage en mode de base.", level='info')
+        log("Chatbot arrêté. Passage en mode de base. Reseting and starting ALDialog.", level='info')
+        try:
+            al_dialog.resetAll()
+            al_dialog.runDialog()
+        except Exception as e:
+            log(f"Error starting ALDialog: {e}", level='error')
         speaker.say_quick("Le chatbot est arrêté.")
         leds.idle()
 
@@ -410,17 +449,22 @@ def main():
     if CONFIG.get('boot', {}).get('boot_reveille', True):
         try: s.service("ALMotion").wakeUp()
         except Exception as e: log("Réveil échoué: %s" % e, level='error')
-    try:
-        ba = s.service("ALBasicAwareness")
-        ba.setTrackingMode("Head")
-        ba.setEngagementMode("SemiEngaged")
-        ba.startAwareness()
-    except Exception as e: log("BasicAwareness échoué: %s" % e, level='warning')
+    # try:
+    #     ba = s.service("ALBasicAwareness")
+    #     ba.setTrackingMode("Head")
+    #     ba.setEngagementMode("SemiEngaged")
+    #     ba.startAwareness()
+    # except Exception as e: log("BasicAwareness échoué: %s" % e, level='warning')
 
     if CONFIG.get('boot', {}).get('start_chatbot_on_boot', False):
         start_chat('gpt')
     else:
-        log("Chatbot non démarré. Interface web disponible.", level='info', color=bcolors.OKGREEN)
+        log("Chatbot non démarré. Reseting and starting ALDialog for basic mode. Interface web disponible.", level='info', color=bcolors.OKGREEN)
+        try:
+            al_dialog.resetAll()
+            al_dialog.runDialog()
+        except Exception as e:
+            log(f"Error starting ALDialog on boot: {e}", level='error')
         speaker.say_quick("Je suis prêt.")
         leds.idle()
 
