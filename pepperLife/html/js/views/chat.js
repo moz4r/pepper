@@ -40,10 +40,11 @@ function updateStatus(status) {
 
     // Reset buttons state
     startGptBtn.disabled = false;
-    startGptBtn.textContent = 'Activer';
+    startGptBtn.innerHTML = 'Activer';
     startBasicBtn.disabled = false;
-    startBasicBtn.textContent = 'Activer';
+    startBasicBtn.innerHTML = 'Activer';
     stopChatBtn.disabled = false;
+    stopChatBtn.innerHTML = 'Arrêter le Chat';
 
     if (status === 'gpt') {
         statusEl.textContent = 'GPT Chatbot Actif';
@@ -67,7 +68,11 @@ async function getChatStatus() {
         const status = await api.getChatStatus();
         updateStatus(status.mode);
     } catch (e) {
-        console.error("Erreur lors de la récupération du statut du chat:", e);
+        if (e.message.includes('Failed to fetch')) {
+            console.log("Impossible de récupérer le statut du chat, le backend est probablement hors ligne.");
+        } else {
+            console.error("Erreur lors de la récupération du statut du chat:", e);
+        }
         updateStatus('stopped'); // Assume stopped on error
     }
 }

@@ -96,7 +96,12 @@ export function init(api) {
       }
 
     } catch (e) {
-      lifeStatus.textContent = 'Erreur';
+      if (e.message.includes('Failed to fetch')) {
+        lifeStatus.textContent = 'Offline';
+      } else {
+        console.error("Erreur lors de la récupération de l'état de vie:", e);
+        lifeStatus.textContent = 'Erreur';
+      }
       lifeStatus.className = 'status-indicator off';
     }
   }
@@ -126,7 +131,12 @@ export function init(api) {
       postureStatus.className = 'status-indicator'; // reset
       postureStatus.classList.add(isAwake ? 'ok' : 'off');
     } catch (e) {
-      postureStatus.textContent = 'Erreur';
+      if (e.message.includes('Failed to fetch')) {
+        postureStatus.textContent = 'Offline';
+      } else {
+        console.error("Erreur lors de la récupération de la posture:", e);
+        postureStatus.textContent = 'Erreur';
+      }
       postureStatus.className = 'status-indicator off';
     }
   }

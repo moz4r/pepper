@@ -381,6 +381,10 @@ class WebServer(object):
                     self._get_tts_languages()
                     return
 
+                if path == '/api/camera/status':
+                    self._camera_status()
+                    return
+
                 # 5) Fichiers statiques (cam.png, last_capture.png, admin/…)
                 return SimpleHTTPRequestHandler.do_GET(self)
 
@@ -418,6 +422,10 @@ class WebServer(object):
 
                 if path == '/api/camera/stop_stream':
                     self._camera_stop_stream()
+                    return
+
+                if path == '/api/camera/switch':
+                    self._camera_switch(payload)
                     return
 
                 if path == '/api/volume/set':
@@ -555,8 +563,11 @@ class WebServer(object):
                 try:
                     vision = self.server.parent.vision_service
                     if vision:
-                        vision.start_streaming()
-                        self._json(200, {'status': 'ok'})
+                        success = vision.start_streaming()
+                        if success:
+                            self._json(200, {'status': 'ok'})
+                        else:
+                            self._send_503('Failed to start camera stream, check logs.')
                     else:
                         self._send_503('Vision service not available.')
                 except Exception as e:
@@ -572,6 +583,41 @@ class WebServer(object):
                         self._send_503('Vision service not available.')
                 except Exception as e:
                     self._send_503('Failed to stop stream: %s' % e)
+
+            def _camera_status(self):
+                try:
+                    vision = self.server.parent.vision_service
+                    if vision:
+                        status = {
+                            'is_streaming': vision.is_streaming,
+                            'current_camera': 'top' if vision.current_camera_index == 0 else 'bottom'
+                        }
+                        self._json(200, status)
+                    else:
+                        self._send_503('Vision service not available.')
+                except Exception as e:
+                    self._send_503('Failed to get camera status: %s' % e)
+        
+            def _camera_switch(self, payload):
+                try:
+                    vision = self.server.parent.vision_service
+                    cam_name = payload.get('camera') # 'top' or 'bottom'
+                    if cam_name not in ['top', 'bottom']:
+                        self._json(400, {'error': 'Invalid camera name'})
+                        return
+                    
+                    camera_index = 0 if cam_name == 'top' else 1
+                    
+                    if vision:
+                        success = vision.switch_camera(camera_index)
+                        if success:
+                            self._json(200, {'status': 'ok'})
+                        else:
+                            self._send_503('Failed to switch camera.')
+                    else:
+                        self._send_503('Vision service not available.')
+                except Exception as e:
+                    self._send_503('Failed to switch camera: %s' % e)
 
             def _config_get_default(self):
                 try:
@@ -1330,7 +1376,9 @@ class WebServer(object):
                         self._json(200, {'text': ''})
                         return
                     lines = tail(log_file, n)
-                    self._json(200, {'text': '\n'.join(lines)})
+                    # Convertir les codes ANSI en HTML pour un affichage correct
+                    html_lines = [ansi_to_html(line) for line in lines]
+                    self._json(200, {'text': '\n'.join(html_lines)})
                 except Exception as e:
                     self._send_503('logs/tail error: %s' % e)
 

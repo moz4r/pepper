@@ -1,3 +1,5 @@
+
+
 // API pour le lanceur lui-même (servi sur le même port que la page, 8080)
 const launcherApi = {
   getStatus: () => fetch('/api/launcher/status').then(r => r.json()),
@@ -93,8 +95,8 @@ const template = `
         <div id="status-text">Vérification...</div>
       </div>
       <div class="actions">
-        <button id="start-btn" class="btn hidden">Démarrer</button>
-        <button id="stop-btn" class="btn hidden">Arrêter</button>
+        <button id="start-btn" class="btn hidden"><span style="font-size: 1.2em;">🧠</span> Démarrer</button>
+        <button id="stop-btn" class="btn hidden"><i class="bi bi-stop-circle"></i> Arrêter</button>
       </div>
       <div id="error-log" class="hidden" style="color: red; margin-top: 10px;"></div>
       <pre id="logs-container" class="logs hidden"></pre>
@@ -194,7 +196,7 @@ async function checkLauncherStatus(api) {
       showNavTabs(true);
       
       const logData = await launcherApi.getLogs();
-      logsContainer.innerHTML = logData.logs.join('<br>');
+      logsContainer.innerHTML = logData.logs.map(log => log.replace(/^[\x00-\x1F\x7F]+/, '')).join('<br>');
       logsContainer.scrollTop = logsContainer.scrollHeight;
 
       // Backend is running, so now we can poll its APIs
@@ -216,6 +218,53 @@ async function checkLauncherStatus(api) {
   }
 }
 
+function pollUntilReady(api, initialLogCount = 0) {
+  const poller = setInterval(async () => {
+    try {
+      const status = await launcherApi.getStatus();
+      if (status.is_running) {
+        const logData = await launcherApi.getLogs();
+        const newLogs = logData.logs.slice(initialLogCount);
+        const isReady = newLogs.some(log => log.includes("Je suis prêt"));
+        
+        if (isReady) {
+          clearInterval(poller);
+          await checkLauncherStatus(api);
+          
+          const startBtn = document.getElementById('start-btn');
+          startBtn.innerHTML = '<span style="font-size: 1.2em;">🧠</span> Démarrer';
+          startBtn.disabled = false;
+        }
+      }
+    } catch (e) {
+      console.warn("Polling for ready status failed, will retry...");
+    }
+  }, 1000);
+
+  setTimeout(() => {
+    clearInterval(poller);
+    const startBtn = document.getElementById('start-btn');
+    if (startBtn && startBtn.disabled) {
+        checkLauncherStatus(api);
+    }
+  }, 30000); // 30 second timeout
+}
+
+function pollUntilStopped(api) {
+  const poller = setInterval(async () => {
+    await checkLauncherStatus(api);
+    const stopBtn = document.getElementById('stop-btn');
+    if (!stopBtn || stopBtn.classList.contains('hidden')) {
+      clearInterval(poller);
+      if (stopBtn) {
+        stopBtn.innerHTML = '<i class="bi bi-stop-circle"></i> Arrêter';
+        stopBtn.disabled = false;
+      }
+    }
+  }, 500);
+  setTimeout(() => clearInterval(poller), 30000); // Safety timeout
+}
+
 export function init(api) {
   const startBtn = document.getElementById('start-btn');
   const stopBtn = document.getElementById('stop-btn');
@@ -225,15 +274,37 @@ export function init(api) {
   const shutdownBtn = document.getElementById('shutdown-btn-robot');
 
   startBtn.addEventListener('click', async () => {
-    document.getElementById('status-text').textContent = 'Démarrage en cours...';
-    await launcherApi.start();
-    setTimeout(() => checkLauncherStatus(api), 1500);
+    startBtn.disabled = true;
+    startBtn.innerHTML = '<div class="spinner" style="width: 18px; height: 18px; margin: 0 auto;"></div>';
+    document.getElementById('status-text').textContent = 'Démarrage en cours... (attente du robot)';
+    
+    try {
+      // Get initial log count to ignore old "ready" messages
+      const initialLogData = await launcherApi.getLogs();
+      const initialLogCount = initialLogData.logs.length;
+
+      await launcherApi.start();
+      pollUntilReady(api, initialLogCount);
+    } catch (e) {
+      document.getElementById('status-text').textContent = 'Erreur au démarrage.';
+      startBtn.innerHTML = '<span style="font-size: 1.2em;">🧠</span> Démarrer';
+      startBtn.disabled = false;
+    }
   });
 
   stopBtn.addEventListener('click', async () => {
+    stopBtn.disabled = true;
+    stopBtn.innerHTML = '<div class="spinner" style="width: 18px; height: 18px; margin: 0 auto;"></div>';
     document.getElementById('status-text').textContent = 'Arrêt en cours...';
-    await launcherApi.stop();
-    setTimeout(() => checkLauncherStatus(api), 1500);
+
+    try {
+      await launcherApi.stop();
+      pollUntilStopped(api); // Poll until status is confirmed stopped
+    } catch (e) {
+      document.getElementById('status-text').textContent = "Erreur lors de l'arrêt.";
+      stopBtn.innerHTML = '<i class="bi bi-stop-circle"></i> Arrêter';
+      stopBtn.disabled = false;
+    }
   });
 
   powerIcon.addEventListener('click', () => {

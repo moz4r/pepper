@@ -19,11 +19,9 @@ export function render(root){
     try {
       const n = parseInt(nInput.value, 10) || 200;
       const d = await api.logsTail(n);
-      // La réponse peut être un objet {text: "..."} ou un tableau de lignes
-      const logText = Array.isArray(d) ? d.join('\n') : (d.text || '');
+      const logText = d.text || ''; // La réponse est maintenant toujours {text: "..."}
       if (logText) {
-        const ansi_up = new AnsiUp();
-        pre.innerHTML = ansi_up.ansi_to_html(logText);
+        pre.innerHTML = logText; // Le serveur envoie déjà du HTML
       } else {
         pre.textContent = '(Logs vides)';
       }

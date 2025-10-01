@@ -140,6 +140,35 @@ class LauncherService:
 # 2. SERVEUR WEB : SERT L'UI ET L'API REST
 # ==============================================================================
 
+def ansi_to_html(text):
+    """Convertit les codes de couleur ANSI (standard et non-standard) en HTML."""
+    text = text.replace('&', '&amp;').replace('<', '&lt;').replace('>', '&gt;')
+    replacements = {
+        # Standard ANSI avec ESC
+        "\033[95m": '<span style="color: magenta">',
+        "\033[94m": '<span style="color: blue">',
+        "\033[96m": '<span style="color: cyan">',
+        "\033[92m": '<span style="color: green">',
+        "\033[93m": '<span style="color: yellow">',
+        "\033[91m": '<span style="color: red">',
+        "\033[1m": '<span style="font-weight: bold">',
+        "\033[4m": '<span style="text-decoration: underline">',
+        "\033[0m": '</span>',
+        # Non-standard sans ESC
+        "[95m": '<span style="color: magenta">',
+        "[94m": '<span style="color: blue">',
+        "[96m": '<span style="color: cyan">',
+        "[92m": '<span style="color: green">',
+        "[93m": '<span style="color: yellow">',
+        "[91m": '<span style="color: red">',
+        "[1m": '<span style="font-weight: bold">',
+        "[4m": '<span style="text-decoration: underline">',
+        "[0m": '</span>',
+    }
+    for code, tag in replacements.items():
+        text = text.replace(code, tag)
+    return text
+
 class WebHandler(SimpleHTTPRequestHandler):
     def __init__(self, *args, **kwargs):
         self.launcher = kwargs.pop('launcher', None)
@@ -163,7 +192,9 @@ class WebHandler(SimpleHTTPRequestHandler):
             }
             self._json_response(200, status)
         elif path == '/api/launcher/logs':
-            self._json_response(200, {'logs': self.launcher.get_logs()})
+            raw_logs = self.launcher.get_logs()
+            html_logs = [ansi_to_html(log) for log in raw_logs]
+            self._json_response(200, {'logs': html_logs})
         else:
             # Servir les fichiers statiques
             SimpleHTTPRequestHandler.do_GET(self)

@@ -22,27 +22,40 @@ class Vision(object):
         self.sub = None
         self.is_streaming = False
         self.streaming_thread = None
+        self.current_camera_index = 0
+        self.camera_users = 0
+        self.lock = threading.Lock()
         self.ui_dir = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), "html")
         self.cam_png_path = os.path.join(self.ui_dir, "cam.png")
 
     def _stream_loop(self):
         while self.is_streaming:
-            png_data = self.get_png()
-            if png_data:
-                try:
-                    with open(self.cam_png_path, "wb") as f:
-                        f.write(png_data)
-                except Exception as e:
-                    self.log("[Vision] Error writing cam.png: %s" % e)
-            time.sleep(1.0 / self.fps)
+            try:
+                png_data = self.get_png()
+                if png_data:
+                    try:
+                        temp_path = self.cam_png_path + ".tmp"
+                        with open(temp_path, "wb") as f:
+                            f.write(png_data)
+                        os.rename(temp_path, self.cam_png_path)
+                    except Exception as e:
+                        self.log("[Vision] Error writing cam.png: %s" % e)
+                time.sleep(1.0 / self.fps)
+            except Exception as e:
+                self.log("[Vision] Unhandled error in stream loop: %s" % e, level='error')
+                time.sleep(1)
 
     def start_streaming(self):
         if not self.is_streaming:
+            if not self.start_camera():
+                self.log("[Vision] Cannot start streaming, camera subscription failed.")
+                return False
             self.is_streaming = True
             self.streaming_thread = threading.Thread(target=self._stream_loop)
             self.streaming_thread.daemon = True
             self.streaming_thread.start()
             self.log("[Vision] Started streaming to cam.png")
+        return True
 
     def stop_streaming(self):
         if self.is_streaming:
@@ -50,6 +63,50 @@ class Vision(object):
             if self.streaming_thread:
                 self.streaming_thread.join()
             self.log("[Vision] Stopped streaming to cam.png")
+            self.stop_camera() # Decrement user count
+        return True
+
+    def switch_camera(self, camera_index):
+        with self.lock:
+            was_streaming = self.is_streaming
+            
+            # Temporarily stop the stream to release the camera handle
+            if was_streaming:
+                self.is_streaming = False
+                if self.streaming_thread:
+                    self.streaming_thread.join()
+                self.log("[Vision] Paused streaming for camera switch")
+
+            # Unsubscribe from the current camera if it's active
+            if self.sub:
+                try:
+                    self.cam.unsubscribe(self.sub)
+                    self.log(f"[Cam] Unsubscribed from camera {self.current_camera_index}")
+                    self.sub = None
+                except Exception as e:
+                    self.log(f"[Cam] Error unsubscribing during switch: {e}", level='warning')
+
+            # Update index and resubscribe
+            self.current_camera_index = camera_index
+            try:
+                self.cam = self.sess.service("ALVideoDevice")
+                name = "PepperLifeCam_%d" % int(time.time())
+                self.sub = self.cam.subscribeCamera(name, self.current_camera_index, self.res, self.color, self.fps)
+                self.log(f"[Cam] Resubscribed to camera {self.current_camera_index}")
+            except Exception as e:
+                self.log(f"[Cam] Failed to subscribe to camera {self.current_camera_index}: {e}", level='error')
+                self.sub = None
+                return False
+
+            # Restart the stream if it was running before
+            if was_streaming:
+                self.is_streaming = True
+                self.streaming_thread = threading.Thread(target=self._stream_loop)
+                self.streaming_thread.daemon = True
+                self.streaming_thread.start()
+                self.log("[Vision] Resumed streaming after camera switch")
+
+        return True
 
     def client(self):
         if self._client is None:
@@ -57,36 +114,52 @@ class Vision(object):
         return self._client
 
     def start_camera(self):
-        try:
-            self.cam = self.sess.service("ALVideoDevice")
-            name = "PepperLifeCam_%d" % int(time.time())
-            self.sub = self.cam.subscribeCamera(name, 0, self.res, self.color, self.fps)
-            self.log("[Cam] ALVideoDevice subscribed: %s" % self.sub)
-            return True
-        except Exception as e:
-            self.log("[Cam] Abonnement caméra impossible: %s" % e)
-            self.sub = None
-            return False
+        with self.lock:
+            self.camera_users += 1
+            self.log(f"[Cam] User added. Total users: {self.camera_users}")
+            if self.camera_users == 1:
+                self.log(f"[Cam] First user, subscribing to camera index {self.current_camera_index}.")
+                try:
+                    self.cam = self.sess.service("ALVideoDevice")
+                    name = "PepperLifeCam_%d" % int(time.time())
+                    self.sub = self.cam.subscribeCamera(name, self.current_camera_index, self.res, self.color, self.fps)
+                    self.log("[Cam] ALVideoDevice subscribed: %s" % self.sub)
+                    return True
+                except Exception as e:
+                    self.log(f"[Cam] Abonnement caméra impossible: {e}", level='error')
+                    self.sub = None
+                    self.camera_users = 0 # Revert on failure
+                    return False
+        return True
 
     def stop_camera(self):
-        try:
-            if self.cam and self.sub:
-                self.cam.unsubscribe(self.sub)
-                self.log("[Cam] Unsubscribed")
-        except Exception:
-            pass
-        self.sub = None
+        with self.lock:
+            if self.camera_users > 0:
+                self.camera_users -= 1
+            self.log(f"[Cam] User removed. Total users: {self.camera_users}")
+            if self.camera_users == 0 and self.sub:
+                self.log("[Cam] Last user, unsubscribing from camera.")
+                try:
+                    self.cam.unsubscribe(self.sub)
+                    self.log("[Cam] Unsubscribed")
+                except Exception as e:
+                    self.log(f"[Cam] Error during unsubscribe: {e}", level='warning')
+                self.sub = None
+        return True
 
     def get_frame_rgb(self):
+        # No lock here, as getImageRemote should be thread-safe
+        # and locking here can cause deadlocks if switch_camera holds the lock for too long.
         if not self.cam or not self.sub:
             return (None, None, None)
         try:
             f = self.cam.getImageRemote(self.sub)
             w, h = int(f[0]), int(f[1])
-            buf = f[6]  # RGB bytes
+            buf = f[6]
             return (w, h, buf)
         except Exception as e:
-            self.log("[Cam] get_frame_rgb error: %s" % e)
+            # This error can be spammy if the camera is switching, so log at debug level
+            self.log("[Cam] get_frame_rgb error: %s" % e, level='debug')
             return (None, None, None)
 
     def get_png(self):

@@ -93,7 +93,7 @@ class classTablet(object):
     def show(self, url=None):
         """Affiche l'URL sur la tablette (webview)."""
         if not self.tablet:
-            self._log("[Tablet] Pas de tablette; UI visible sur %s" % self.get_url())
+            self._log("[Tablet] Pas de tablette; UI visible sur %s" % self.get_url(), level='debug')
             return
         try:
             self.tablet.showWebview(url or self.get_url(from_tablet=True))
