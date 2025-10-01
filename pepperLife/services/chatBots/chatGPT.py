@@ -1,10 +1,13 @@
 # -*- coding: utf-8 -*-
-# classGpt4o.py - Chat logic using OpenAI GPT-4o
+# chatGPT.py - Chat logic using OpenAI GPT
 
 from openai import OpenAI
 import os
+import logging
 
-class Gpt4o(object):
+logging.basicConfig(level=logging.DEBUG)
+
+class chatGPT(object):
     @staticmethod
     def _read_text_file(path):
         try:
@@ -19,7 +22,7 @@ class Gpt4o(object):
         # 1) on lit le fichier de base
         base_prompt = ""
         base_prompt_path = os.path.join(base_dir, "prompts", "system_prompt.txt")
-        content = Gpt4o._read_text_file(base_prompt_path)
+        content = chatGPT._read_text_file(base_prompt_path)
         if content is not None:
             base_prompt = content.strip()
         else:
@@ -68,10 +71,12 @@ class Gpt4o(object):
             resp = self.client().chat.completions.create(
                 model=self.config['openai']['chat_model'],
                 messages=msgs,
-                temperature=0.6,
-                max_tokens=60,
+                temperature=1,
+                **({'max_completion_tokens': 60} if self.config['openai']['chat_model'] in ['gpt-5', 'gpt-5-mini'] else {'max_tokens': 60}),
             )
+            logging.debug(f"OpenAI API Response: {resp}")
             return (resp.choices[0].message.content or "").replace("\n", " ").strip()
-        except Exception:
+        except Exception as e:
+            logging.error(f"Chatbot error: {e}")
             # En cas d'erreur avec l'API, retourner un message d'erreur simple
             return "Désolé, une erreur est survenue avec le service de chat."

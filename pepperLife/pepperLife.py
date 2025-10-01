@@ -169,7 +169,7 @@ def main():
     from services.classTablet import classTablet
     from services.classSystem import version as SysVersion
     from services.classSTT import STT
-    from services.classGpt4o import Gpt4o
+    from services.chatBots.chatGPT import chatGPT
     from services.classVision import Vision
 
     load_config()
@@ -252,12 +252,12 @@ def main():
     anim.health_check()
 
     try:
-        base_prompt = Gpt4o.load_system_prompt(CONFIG.get('openai', {}), APP_DIR)
+        base_prompt = chatGPT.load_system_prompt(CONFIG.get('openai', {}), APP_DIR)
         prompt_text, _ = build_system_prompt_in_memory(base_prompt, anim)
         SYSTEM_PROMPT = prompt_text
     except Exception as e:
         log(f"[PROMPT] Génération dynamique échouée: {e}", level='warning', color=bcolors.WARNING)
-        SYSTEM_PROMPT = Gpt4o.load_system_prompt(CONFIG.get('openai', {}), APP_DIR)
+        SYSTEM_PROMPT = chatGPT.load_system_prompt(CONFIG.get('openai', {}), APP_DIR)
 
     leds = PepperLEDs(s, _logger)
     cap = Listener(s, CONFIG['audio'], _logger)
@@ -274,8 +274,13 @@ def main():
 
     def run_chat_loop(stop_event):
         log("Démarrage du thread du chatbot GPT...", level='info')
+        
+        # Log the model being used
+        model_used = CONFIG.get('openai', {}).get('chat_model', 'gpt-4o-mini (default)')
+        log(f"[Chat] Utilisation du modèle : {model_used}", level='info', color=bcolors.OKCYAN)
+
         stt_service = STT(CONFIG, _logger)
-        chat_service = Gpt4o(CONFIG, system_prompt=SYSTEM_PROMPT)
+        chat_service = chatGPT(CONFIG, system_prompt=SYSTEM_PROMPT)
 
         api_key = CONFIG['openai'].get('api_key')
         if api_key:
@@ -386,6 +391,9 @@ def main():
         if chat_thread and chat_thread.is_alive():
             log("Un chat est déjà en cours, arrêt avant de changer de mode.", level='warning')
             stop_chat()
+
+        # Reload config to get latest API key/prompt before starting
+        load_config()
 
         if mode == 'gpt':
             log("Stopping ALDialog for GPT mode.", level='info')
