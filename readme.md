@@ -1,4 +1,4 @@
-# PepperLife - NaoQI et GPT
+# PepperLife - NaoQI / Python3 / GPT
 
 ![PepperLife Banner](https://github.com/user-attachments/assets/fba8f19b-ef94-4246-bdc5-7bd2d5027dfb)
 
