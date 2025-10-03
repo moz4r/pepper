@@ -1,4 +1,4 @@
-# PepperLife - Un Cerveau Avancé pour le Robot Pepper
+# PepperLife - Un Cerveau Avancé pour le Robot Pepper en mixant la force de NaoQI et GPT
 
 ![PepperLife Banner](https://github.com/user-attachments/assets/fba8f19b-ef94-4246-bdc5-7bd2d5027dfb)
 
