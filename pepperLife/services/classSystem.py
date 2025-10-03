@@ -3,6 +3,16 @@
 import os
 import io
 
+import logging
+
+
+os.environ.pop("OPENAI_LOG", None)  # évite que l'ENV force DEBUG
+
+for name in ("openai", "openai._base_client", "httpx", "httpcore"):
+    lg = logging.getLogger(name)
+    lg.setLevel(logging.WARNING)   # ou logging.ERROR si tu veux couper encore plus
+    lg.propagate = False
+
 class bcolors:
     HEADER = '\x1b[95m'
     OKBLUE = '\x1b[94m'
@@ -44,7 +54,7 @@ def build_system_prompt_in_memory(base_text, animation_instance):
     if not base_text:
         base_text = "CATALOGUE DES ANIMATIONS DISPONIBLES (utilise ces clés telles quelles)\n{{CATALOGUE_AUTO}}"
 
-    lines = animation_instance.get_installed_animations() if animation_instance else []
+    lines = animation_instance.get_animation_families() if animation_instance else []
     catalogue = "\n".join(lines)
 
     if "{{CATALOGUE_AUTO}}" in base_text:

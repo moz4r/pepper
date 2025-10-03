@@ -18,8 +18,19 @@
     "_comment": "Configuration pour les modèles OpenAI, le prompt système et la clé API. Si laissée vide, la variable d'environnement OPENAI_API_KEY sera utilisée.",
     "api_key": "",
     "stt_model": "gpt-4o-transcribe",
+    "_comment_models": "Le modèle de chat à utiliser. `gpt-5` active des options spécifiques.",
     "chat_model": "gpt-4o",
-    "custom_prompt": "Ton nom est pepper"
+    "_comment_temperature": "Contrôle le caractère aléatoire. Non utilisé par les modèles gpt-5.",
+    "temperature": 0.2,
+    "_comment_reasoning": "Niveau de raisonnement (pour les modèles gpt-5 uniquement). Peut être `null` ou `\"none\"` pour désactiver.",
+    "reasoning_effort": "low",
+    "_comment_history": "Longueur de l'historique de chat à conserver (en nombre de messages). Ex: 4 pour 2 échanges.",
+    "history_length": 4,
+    "custom_prompt": "Ton nom est pepper",
+    "_comment_maxtokens": "Nombre maximum de tokens (mots/ponctuation) que le modèle peut générer dans une réponse.",
+    "max_output_tokens": 4096,
+    "_comment_verbosity": "Contrôle le bavardage de la réponse: low, medium, high.",
+    "text_verbosity": "low"
   },
   "vision": {
   "model": "gpt-4o",

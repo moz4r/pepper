@@ -27,9 +27,11 @@ except ImportError:
 
 try:
     from http.server import SimpleHTTPRequestHandler, HTTPServer
+    from socketserver import ThreadingMixIn
 except ImportError:
     from SimpleHTTPServer import SimpleHTTPRequestHandler
     from BaseHTTPServer import HTTPServer
+    from SocketServer import ThreadingMixIn
 
 # ==============================================================================
 # 1. SERVICE NAOqi : LANCEUR DE PROCESSUS
@@ -110,7 +112,17 @@ class LauncherService:
             return False
 
     def is_running(self):
-        return self.process and self.process.poll() is None
+        if self.process and self.process.poll() is None:
+            return True
+        
+        # Si le processus existe mais ne tourne plus, c'est qu'il vient de se terminer.
+        if self.process:
+            exit_code = self.process.poll()
+            self.logger.info("Le processus s'est terminé avec le code: {}".format(exit_code))
+            self.logs.append("--- Script terminé (code: {}) ---".format(exit_code))
+            self.process = None # Nettoyage
+            
+        return False
 
     def get_logs(self):
         return list(self.logs)
@@ -211,19 +223,25 @@ class WebHandler(SimpleHTTPRequestHandler):
             self._json_response(404, {'error': 'Not Found'})
 
 def start_web_server(logger, port, root_dir, launcher_service):
-    """DÃ©marre le serveur HTTP dans un thread sÃ©parÃ©."""
-    
+    """DÃ©marre le serveur HTTP multi-thread dans un thread sÃ©parÃ©."""
+
+    # DÃ©finition d'un serveur qui gÃ¨re chaque requÃªte dans un thread distinct
+    class ThreadingHTTPServer(ThreadingMixIn, HTTPServer):
+        daemon_threads = True
+
     def handler_factory(*args, **kwargs):
         return WebHandler(*args, launcher=launcher_service, **kwargs)
 
-    class ThreadedHTTPServer(threading.Thread):
+    class WebServerThread(threading.Thread):
         def __init__(self, host, port, root_dir, factory):
-            super(ThreadedHTTPServer, self).__init__()
+            super(WebServerThread, self).__init__()
             self.daemon = True
-            self.server = HTTPServer((host, port), factory)
-            logger.info("[WebServer] DÃ©marrage sur {}:{}, racine: {}".format(host, port, root_dir))
+            self.server = ThreadingHTTPServer((host, port), factory)
+            logger.info("[WebServer] DÃ©marrage du serveur multi-thread sur {}:{}, racine: {}".format(host, port, root_dir))
 
         def run(self):
+            # os.chdir n'est pas thread-safe, mais on le garde pour minimiser les changements
+            # par rapport Ã  la version originale.
             os.chdir(root_dir)
             self.server.serve_forever()
 
@@ -232,7 +250,7 @@ def start_web_server(logger, port, root_dir, launcher_service):
                 self.server.shutdown()
                 self.server.server_close()
 
-    server_thread = ThreadedHTTPServer('0.0.0.0', port, root_dir, handler_factory)
+    server_thread = WebServerThread('0.0.0.0', port, root_dir, handler_factory)
     server_thread.start()
     return server_thread
 
@@ -248,7 +266,7 @@ def main():
     formatter = logging.Formatter('%(asctime)s - %(name)s - %(levelname)s - %(message)s')
     
     try:
-        fh = logging.FileHandler(log_file)
+        fh = logging.FileHandler(log_file, mode='w')
         fh.setFormatter(formatter)
         logger.addHandler(fh)
     except Exception as e:

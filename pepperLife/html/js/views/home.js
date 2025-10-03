@@ -192,13 +192,8 @@ async function checkLauncherStatus(api) {
       statusDot.className = 'status-dot running';
       startBtn.classList.add('hidden');
       stopBtn.classList.remove('hidden');
-      logsContainer.classList.remove('hidden');
       showNavTabs(true);
       
-      const logData = await launcherApi.getLogs();
-      logsContainer.innerHTML = logData.logs.map(log => log.replace(/^[\x00-\x1F\x7F]+/, '')).join('<br>');
-      logsContainer.scrollTop = logsContainer.scrollHeight;
-
       // Backend is running, so now we can poll its APIs
       api.systemInfo().then(data => updateRobotStatus('ok', data)).catch(() => updateRobotStatus('error'));
 
@@ -207,10 +202,15 @@ async function checkLauncherStatus(api) {
       statusDot.className = 'status-dot stopped';
       startBtn.classList.remove('hidden');
       stopBtn.classList.add('hidden');
-      logsContainer.classList.add('hidden');
       showNavTabs(false);
       updateRobotStatus('off'); // Manually set to "Backend off"
     }
+
+    // Toujours mettre à jour les logs
+    const logData = await launcherApi.getLogs();
+    logsContainer.innerHTML = logData.logs.map(log => log.replace(/^[\x00-\x1F\x7F]+/, '')).join('<br>');
+    logsContainer.scrollTop = logsContainer.scrollHeight;
+
   } catch (e) {
     statusText.textContent = "Erreur de com. avec le lanceur.";
     pythonRunnerStatus.innerHTML = `<div class="status-dot" style="background-color: #f44336;"></div> <div>Lanceur : Erreur</div>`;
@@ -235,6 +235,16 @@ function pollUntilReady(api, initialLogCount = 0) {
           startBtn.innerHTML = '<span style="font-size: 1.2em;">🧠</span> Démarrer';
           startBtn.disabled = false;
         }
+      } else {
+        // Le script s'est arrêté avant d'être prêt (crash)
+        clearInterval(poller);
+        const startBtn = document.getElementById('start-btn');
+        if (startBtn) {
+            startBtn.innerHTML = '<span style="font-size: 1.2em;">🧠</span> Démarrer';
+            startBtn.disabled = false;
+        }
+        // Mettre à jour l'UI pour refléter l'état arrêté
+        await checkLauncherStatus(api);
       }
     } catch (e) {
       console.warn("Polling for ready status failed, will retry...");
@@ -268,10 +278,14 @@ function pollUntilStopped(api) {
 export function init(api) {
   const startBtn = document.getElementById('start-btn');
   const stopBtn = document.getElementById('stop-btn');
+  const logsContainer = document.getElementById('logs-container');
   const powerIcon = document.getElementById('power-icon');
   const powerMenu = document.getElementById('power-menu');
   const restartBtn = document.getElementById('restart-btn-robot');
   const shutdownBtn = document.getElementById('shutdown-btn-robot');
+
+  // Rendre la console visible dès le départ
+  logsContainer.classList.remove('hidden');
 
   startBtn.addEventListener('click', async () => {
     startBtn.disabled = true;

@@ -45,8 +45,38 @@ export function render(root, api) {
                             <option value="gpt-4o-mini">gpt-4o-mini</option>
                             <option value="gpt-4o">gpt-4o</option>
                             <option value="gpt-5-mini">gpt-5-mini</option>
+                            <option value="gpt-5-nano">gpt-5-nano</option>
                             <option value="gpt-5">gpt-5</option>
                         </select>
+                    </div>
+                    <div class="form-group" id="form-group-temperature">
+                        <label for="gpt-temperature">Temperature</label>
+                        <input type="number" step="0.1" min="0" max="2" id="gpt-temperature">
+                    </div>
+                    <div class="form-group" id="form-group-reasoning">
+                        <label for="gpt-reasoning">Effort de raisonnement</label>
+                        <select id="gpt-reasoning">
+                            <option value="minimal">minimal</option>
+                            <option value="low">low</option>
+                            <option value="medium">medium</option>
+                            <option value="high">high</option>
+                        </select>
+                    </div>
+                    <div class="form-group">
+                        <label for="gpt-verbosity">Verbosity</label>
+                        <select id="gpt-verbosity">
+                            <option value="low">low</option>
+                            <option value="medium">medium</option>
+                            <option value="high">high</option>
+                        </select>
+                    </div>
+                    <div class="form-group">
+                        <label for="gpt-max-tokens">Max Tokens</label>
+                        <input type="number" step="16" min="16" max="4096" id="gpt-max-tokens">
+                    </div>
+                    <div class="form-group">
+                        <label for="gpt-history">Longueur de l'historique</label>
+                        <input type="number" step="2" min="0" max="20" id="gpt-history">
                     </div>
                     <div class="form-group">
                         <label for="gpt-prompt">Custom Prompt</label>
@@ -76,6 +106,11 @@ function init(api) {
     const apiKeyInput = document.getElementById('gpt-api-key');
     const modelSelect = document.getElementById('gpt-model');
     const promptTextarea = document.getElementById('gpt-prompt');
+    const tempInput = document.getElementById('gpt-temperature');
+    const reasoningSelect = document.getElementById('gpt-reasoning');
+    const historyInput = document.getElementById('gpt-history');
+    const maxTokensInput = document.getElementById('gpt-max-tokens');
+    const verbositySelect = document.getElementById('gpt-verbosity');
 
     let currentConfig = {};
     let currentStatus = {};
@@ -91,6 +126,16 @@ function init(api) {
             mainChatBtn.classList.add('btn-success');
             mainChatBtn.classList.remove('btn-danger');
         }
+    }
+
+    function updateModelOptionsVisibility() {
+        const modelName = modelSelect.value.toLowerCase();
+        const isGpt5 = modelName.startsWith('gpt-5');
+        const tempDisplay = isGpt5 ? 'none' : 'block';
+        const reasonDisplay = isGpt5 ? 'block' : 'none';
+
+        document.getElementById('form-group-temperature').style.display = tempDisplay;
+        document.getElementById('form-group-reasoning').style.display = reasonDisplay;
     }
 
     function updateStatus(status) {
@@ -111,6 +156,12 @@ function init(api) {
             apiKeyInput.value = config.openai?.api_key || '';
             modelSelect.value = config.openai?.chat_model || 'gpt-4o-mini';
             promptTextarea.value = config.openai?.custom_prompt || '';
+            tempInput.value = config.openai?.temperature ?? 0.2;
+            reasoningSelect.value = config.openai?.reasoning_effort || 'low';
+            historyInput.value = config.openai?.history_length ?? 4;
+            maxTokensInput.value = config.openai?.max_output_tokens ?? 4096;
+            verbositySelect.value = config.openai?.text_verbosity || 'low';
+            updateModelOptionsVisibility(); // Set initial visibility
         });
     }
 
@@ -119,6 +170,8 @@ function init(api) {
     }
 
     // Event Listeners
+    modelSelect.addEventListener('input', updateModelOptionsVisibility);
+
     document.querySelectorAll('input[name="chat_mode"]').forEach(radio => {
         radio.addEventListener('change', (e) => {
             if (e.target.value === 'gpt') {
@@ -138,7 +191,12 @@ function init(api) {
                 ...currentConfig.openai,
                 api_key: apiKeyInput.value,
                 chat_model: modelSelect.value,
-                custom_prompt: promptTextarea.value
+                custom_prompt: promptTextarea.value,
+                temperature: parseFloat(tempInput.value),
+                reasoning_effort: reasoningSelect.value,
+                history_length: parseInt(historyInput.value, 10),
+                max_output_tokens: parseInt(maxTokensInput.value, 10),
+                text_verbosity: verbositySelect.value
             }
         };
         api.configSetUser(newConfig).then(() => {

@@ -6,6 +6,7 @@
 # 2.7 : on utilise les clés NAOqi 'animations/...'.
 
 import re
+import random
 from pathlib import Path
 
 try:
@@ -30,6 +31,7 @@ class Animation(object):
         self.installed_qianim = set()    # 2.9 : "Stand/.../Name_01.qianim" (relatifs à 'animations/')
         self.by_prefix_keys = {}         # 2.7 : "animations/.../Name_" -> [...]
         self.by_prefix_qianim = {}       # 2.9 : "Stand/.../Name_" -> [...]
+        self.animation_families = {}     # "animations/.../Name" -> [...]
 
         self.last_resolved = None
         self.refresh()  # log jaune “X animations chargées”
@@ -80,12 +82,22 @@ class Animation(object):
                     fam = self.RE_SUFFIX_NUM.sub("_", noext)  # Name_03 -> Name_
                     self.by_prefix_qianim.setdefault(fam, []).append(rel)
 
-        # Log jaune (une seule fois ici)
+        # Familles unifiées
+        self.animation_families.clear()
+        prefix_map = self.by_prefix_qianim if self.is_29 else self.by_prefix_keys
+        for fam_underscore, anims in prefix_map.items():
+            # Clé propre: 'animations/Stand/Gestures/Hey_' -> 'animations/Stand/Gestures/Hey'
+            clean_fam = fam_underscore.rstrip('_')
+            self.animation_families[clean_fam] = anims
+
+        # Log (une seule fois ici)
         count = len(self.installed_qianim) if self.is_29 else len(self.installed_keys)
+        fam_count = len(self.animation_families)
+        log_msg = f"{count} animations chargées, compressées en {fam_count} familles pour le prompt."
         try:
-            self.log(f"{count} animations chargées", level='info', color=bcolors.WARNING)
+            self.log(log_msg, level='info', color=bcolors.WARNING)
         except TypeError:
-            self.log(f"{count} animations chargées", level='info')
+            self.log(log_msg, level='info')
 
     # ------------- Helpers normalisation -------------
     @staticmethod
@@ -147,6 +159,10 @@ class Animation(object):
         return rp if rp.startswith("animations/") else ("animations/" + rp)
 
     # ------------- API publique -------------
+    def get_animation_families(self):
+        """Retourne une liste triée des noms de familles d'animations."""
+        return sorted(self.animation_families.keys())
+
     def get_installed_animations(self):
         """Retourne une liste triée des animations installées (clés ou .qianim)."""
         return sorted(list(self.installed_qianim if self.is_29 else self.installed_keys))
@@ -161,9 +177,9 @@ class Animation(object):
     def normalize_text(self, text, intent=None):
         """
         Si ^start(...) est présent, réécrit le début :
+        - Gère les familles d'animations (ex: 'Hey') en choisissant une anim au hasard.
         - 2.9 : accepte entrée avec/ sans 'animation(s)/', et émet toujours 'animation/...*.qianim'
         - 2.7 : accepte 'animations/...'
-        Ajoute ^wait(KEY) juste après ^start(KEY).
         """
         t = text or ""
         m = self.RE_START.match(t)
@@ -171,48 +187,51 @@ class Animation(object):
             return t
 
         raw = (m.group(1) or "").strip()
+        chosen = None
 
-        # ----- 2.9 -----
+        # ----- 2.9 (qianim) -----
         if self.is_29:
-            key_rel = self._to_qianim_relative(raw)  # relatif à 'animations/'
-            chosen = None
-
-            # exact (avec extension)
-            if key_rel in self.installed_qianim:
-                chosen = key_rel
+            key_rel = self._to_qianim_relative(raw)
+            # Essai 1: La clé est une famille connue ?
+            # (ex: Stand/Gestures/Hey sans _ et sans .qianim)
+            family_anims = self.animation_families.get(key_rel)
+            if family_anims:
+                chosen = random.choice(family_anims)
+                self.log(f"[ANIM] Famille '{raw}' -> Choix aléatoire: {chosen}", level='info')
             else:
-                # famille si pas de suffixe numérique
-                base_noext = key_rel[:-7] if key_rel.endswith(".qianim") else key_rel
-                if not self.RE_SUFFIX_NUM.search(base_noext):
-                    fam = self._resolve_family_first_qianim(base_noext)
-                    if fam:
-                        self.log("[ANIM] ^start(%s) -> %s" % (raw, fam), level='info')
-                        chosen = fam
+                # Essai 2: C'est un chemin exact vers un .qianim ?
+                if key_rel in self.installed_qianim:
+                    chosen = key_rel
+                # Essai 3: C'est un chemin sans .qianim ?
+                elif f"{key_rel}.qianim" in self.installed_qianim:
+                    chosen = f"{key_rel}.qianim"
 
             if not chosen:
-                chosen = key_rel
+                self.log(f"[ANIM] Animation ou famille inconnue (2.9): '{raw}'", level='warning')
+                chosen = key_rel # On tente quand même de l'envoyer
 
             emit = self._emit29(chosen)
             self.last_resolved = emit
-            head = "^start(%s) " % (emit)
+            head = f"^start({emit}) "
             return self.RE_START.sub(head, t, count=1)
 
-        # ----- 2.7 -----
-        key = self._ensure_anim27_prefix(self._strip_dot_slash(raw))
-        if key in self.installed_keys:
-            self.last_resolved = key
-            head = "^start(%s) " % (key)
-            return self.RE_START.sub(head, t, count=1)
+        # ----- 2.7 (clés NAOqi) -----
+        else:
+            key = self._ensure_anim27_prefix(self._strip_dot_slash(raw))
+            # Essai 1: La clé est une famille connue ?
+            # (ex: animations/Stand/Gestures/Hey)
+            family_anims = self.animation_families.get(key)
+            if family_anims:
+                chosen = random.choice(family_anims)
+                self.log(f"[ANIM] Famille '{raw}' -> Choix aléatoire: {chosen}", level='info')
+            # Essai 2: C'est une clé exacte connue ?
+            elif key in self.installed_keys:
+                chosen = key
 
-        fam = self.RE_SUFFIX_NUM.sub("_", key)
-        resolved = self._resolve_family_first_key(fam)
-        if resolved:
-            self.log("[ANIM] ^start(%s) -> %s" % (raw, resolved), level='info')
-            self.last_resolved = resolved
-            head = "^start(%s) " % (resolved)
-            return self.RE_START.sub(head, t, count=1)
+            if not chosen:
+                self.log(f"[ANIM] Animation ou famille inconnue (2.7): '{raw}'", level='warning')
+                chosen = key # On tente quand même
 
-        self.log("[ANIM] clé inconnue: %s" % key, level='warning')
-        self.last_resolved = key
-        head = "^start(%s) " % (key)
-        return self.RE_START.sub(head, t, count=1)
+            self.last_resolved = chosen
+            head = f"^start({chosen}) "
+            return self.RE_START.sub(head, t, count=1)

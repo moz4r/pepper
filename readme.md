@@ -1,74 +1,122 @@
-# PepperLife 0.6
+# PepperLife - Un Cerveau Avancé pour le Robot Pepper
 
-![pepperlife_edited](https://github.com/user-attachments/assets/fba8f19b-ef94-4246-bdc5-7bd2d5027dfb)
+![PepperLife Banner](https://github.com/user-attachments/assets/fba8f19b-ef94-4246-bdc5-7bd2d5027dfb)
 
-Pipeline léger **NAOqi + OpenAI** pour **Pepper** :
-
-- 🎙️ Écoute via streaming audio
-- 🔤 STT OpenAI (`gpt-4o-mini-transcribe`, fallback `whisper-1`)
-- 💬 Chat (`gpt-4o-mini`)
-- 👁️ **Vision** : demandez "que vois-tu ?" pour que Pepper décrive la scène.
-- 💡 LEDs synchronisées : **Bleu** (REC) → **Violet** (réflexion) → **Blanc** (parole/idle)
-- 🕺 **Gestion dynamique des animations** : le LLM peut déclencher des animations (`^start(...)`) parmi un catalogue généré automatiquement au démarrage.
-- 🔇 Anti-larsen & anti-bruit (blacklist + heuristiques)
-- 🧩 Architecture par classes normalisées : `classLEDs.py`, `classAnimation.py`, `classRobotBehavior.py`
-- ✔️ Interface web de contrôle et de diagnostique du robot
-- 🤖 **Système de Chatbot Modulaire** : Le robot démarre avec un canal de base et le chatbot GPT-4o peut être activé/désactivé à la demande via l'interface web.
-- 📱 **Nouvel onglet "Chat"** : Gérez facilement les modes de conversation du robot (canal de base ou GPT-4o).
-- 🚀 **Gestion Améliorée des Applications** : L'onglet "Applications" liste désormais séparément les applications et les animations, avec une meilleure compatibilité des versions NAOqi et des indicateurs d'état précis.
+**PepperLife** est un projet open-source qui vise à doter le robot **Pepper** de capacités d'interaction avancées en le connectant à des modèles de langage (LLM) de pointe comme GPT-4o d'OpenAI. Il transforme Pepper en un assistant plus intelligent, capable de comprendre, de voir, de parler et d'interagir de manière fluide et naturelle.
 
 ---
 
-## Prérequis
+## 🚀 Fonctionnalités Principales
 
-- **Pepper NAOqi 2.5 -> 2.9**
-- **Python 3** (sur Pepper via l app `python3nao`, ou PC avec SDK NAOqi)
-- **Clé OpenAI** (`OPENAI_API_KEY`)
-- Services NAOqi : **ALAudioDevice**, **ALTextToSpeech**, **ALLeds**, **ALMotion**, **ALRobotPosture**, **ALAnimatedSpeech**, **ALVideoDevice**, **ALBehaviorManager**
+- **🗣️ Conversation Intelligente** : Dialogue fluide et naturel grâce au modèle `gpt-4o-mini`.
+- **👁️ Vision Intégrée** : Demandez à Pepper ce qu'il voit ("que vois-tu ?") et il décrira la scène en utilisant ses caméras.
+- **🎙️ Transcription en Temps Réel** : Écoute active via streaming audio et transcription précise avec `gpt-4o-mini-transcribe` (ou `whisper-1` en solution de repli).
+- **🕺 Animations Dynamiques** : Le LLM peut déclencher des animations contextuelles (`^start(...)`) à partir d'un catalogue généré automatiquement, rendant l'interaction plus vivante.
+- **💡 Indicateurs LED Intuitifs** : Les LEDs de Pepper changent de couleur pour indiquer son état : **Bleu** (écoute), **Violet** (réflexion), **Blanc** (parole/attente).
+- **🔇 Gestion Audio Avancée** : Systèmes anti-larsen et anti-bruit pour une meilleure qualité audio.
+- **🌐 Interface Web de Contrôle** : Une interface web complète pour gérer le robot, surveiller son état, et configurer ses fonctionnalités.
+- **🧩 Architecture Modulaire** : Le système est conçu en classes Python normalisées (`classLEDs`, `classAnimation`, etc.) pour une maintenance et une évolution facilitées.
 
-```bash
+---
 
+## 🔧 Comment ça marche ?
 
+Le système suit un pipeline simple mais puissant :
 
-## Installation
+1.  **Écoute** : Le microphone de Pepper capture l'audio en continu.
+2.  **Transcription (STT)** : L'audio est envoyé à l'API d'OpenAI pour être transformé en texte.
+3.  **Compréhension (Chat)** : Le texte est envoyé au modèle de langage (LLM) pour générer une réponse.
+4.  **Action** : La réponse est utilisée pour :
+    *   Faire parler le robot (TTS).
+    *   Déclencher des animations.
+    *   Exécuter des commandes spécifiques.
 
-Il y a deux méthodes pour installer l'application sur le robot.
+---
 
-### Méthode 1 : Choregraphe
+## 🛠️ Prérequis
 
-1.  Ouvrez Choregraphe et connectez-vous à votre robot.
-2.  Sélectionnez le fichier `pepperlife.pkg` à installer.
+### Matériel & Logiciel
+- Un robot **Pepper** avec **NAOqi 2.5, 2.9 ou une version compatible**.
+- **Python 3** installé sur le robot (via l'application `python3nao`) ou sur un PC avec le SDK NAOqi.
+- Une **clé d'API OpenAI** valide.
 
-### Méthode 2 : Ligne de commande (pour NAOqi )
+### Services NAOqi
+Le projet nécessite que les services suivants soient actifs sur le robot :
+- `ALAudioDevice`
+- `ALTextToSpeech`
+- `ALLeds`
+- `ALMotion`
+- `ALRobotPosture`
+- `ALAnimatedSpeech`
+- `ALVideoDevice`
+- `ALBehaviorManager`
 
-1.  Transférez le fichier `pepperlife.pkg` sur le robot (par exemple dans `/home/nao/`) via `scp` ou `sftp`.
+---
+
+## 📦 Installation
+
+Il existe deux méthodes principales pour installer l'application sur votre robot.
+
+### Méthode 1 : Via Choregraphe
+1.  Ouvrez **Choregraphe** et connectez-vous à votre robot.
+2.  Installez le fichier `pepperlife.pkg` via le panneau de gestion des applications.
+
+### Méthode 2 : En Ligne de Commande
+1.  Transférez le fichier `pepperlife.pkg` sur le robot (par exemple, dans `/home/nao/`) en utilisant `scp` ou `sftp`.
 2.  Connectez-vous au robot en SSH.
-3.  Lancez la commande :
+3.  Exécutez la commande suivante :
     ```bash
     qicli call PackageManager.install /home/nao/pepperlife.pkg
     ```
 
-### Post-installation : Dépendances
-
-Au premier lancement, le script essaiera d'installer les dépendances Python (comme `openai`) automatiquement. Si cela échoue, connectez-vous en SSH au robot et lancez :
-
+### Post-installation : Dépendances Python
+Au premier lancement, le script tentera d'installer les dépendances Python requises (comme `openai`). Si cette étape échoue, connectez-vous en SSH au robot et installez-les manuellement :
 ```bash
+# Mettre à jour pip
 /home/nao/.local/share/PackageManager/apps/python3nao/bin/runpy3.sh -m pip install --upgrade pip
+
+# Installer les dépendances
 /home/nao/.local/share/PackageManager/apps/python3nao/bin/runpy3.sh -m pip install openai
 ```
 
+---
 
-### Utilisation
+## 🚀 Utilisation
 
-Une fois l'application installée, le service de lancement démarre automatiquement avec le robot. Par défaut, seul le serveur web et le canal de base sont actifs.
+Une fois l'application installée, le service de lancement démarre automatiquement avec le robot.
 
-1.  Ouvrez un navigateur web sur un ordinateur connecté au même réseau que le robot.
-2.  Rendez-vous à l'adresse suivante, en remplaçant `<IP_DU_ROBOT>` par l'adresse IP de votre Pepper :
+1.  Assurez-vous que votre ordinateur est sur le même réseau que le robot.
+2.  Ouvrez un navigateur web et accédez à l'adresse suivante, en remplaçant `<IP_DU_ROBOT>` par l'adresse IP de votre Pepper :
     ```
     http://<IP_DU_ROBOT>:8080
     ```
-3.  Vous accéderez à l'interface web qui vous permettra de démarrer, arrêter et configurer l'application PepperLife, y compris l'activation/désactivation des modes de chatbot et la gestion des applications/animations.
+3.  Depuis cette interface, vous pouvez :
+    *   **Démarrer et arrêter** les services principaux de PepperLife.
+    *   **Activer ou désactiver** le chatbot GPT-4o.
+    *   **Gérer et lancer** des applications ou des animations.
+    *   **Consulter les logs** et l'état du robot.
 
-<img width="1793" height="1094" alt="image" src="https://github.com/user-attachments/assets/6023eaa0-73cd-4122-aaf8-fed1d9683fe4" />
+### Configuration de la clé OpenAI
+Pour que le chatbot fonctionne, vous devez fournir votre clé d'API OpenAI. Vous pouvez le faire via l'interface web dans l'onglet **Settings**.
 
-<img width="1788" height="912" alt="image" src="https://github.com/user-attachments/assets/80b240a6-6386-4046-a6a1-7a6ed2476ead" />
+---
+
+## 📸 Interface Web
+
+Voici un aperçu de l'interface de contrôle :
+
+**Tableau de bord principal :**
+<img width="1793" height="1094" alt="Tableau de bord" src="https://github.com/user-attachments/assets/6023eaa0-73cd-4122-aaf8-fed1d9683fe4" />
+
+**Gestion des applications et animations :**
+<img width="1788" height="912" alt="Gestion des applications" src="https://github.com/user-attachments/assets/80b240a6-6386-4046-a6a1-7a6ed2476ead" />
+
+---
+
+## 🙌 Contribution
+
+Les contributions sont les bienvenues ! Si vous souhaitez améliorer PepperLife, n'hésitez pas à forker le projet, créer une branche pour votre fonctionnalité et soumettre une Pull Request.
+
+## 📄 Licence
+
+Ce projet est distribué sous la licence MIT. Voir le fichier `LICENSE` pour plus de détails.

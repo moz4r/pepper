@@ -1,82 +1,265 @@
 # -*- coding: utf-8 -*-
-# chatGPT.py - Chat logic using OpenAI GPT
+# chatGPT.py — Client OpenAI Responses API (non-stream)
+# - Modèle dynamique (config.json / constructeur / override par appel)
+# - Reasoning minimal UNIQUEMENT si modèle = GPT-5*
+# - Pas de 'temperature' pour GPT-5 (retry auto si l'API le refuse)
+# - Historique tronqué à 2 échanges pour réduire latence/coût
+# - Logs détaillés: texte, usage, cached_tokens
 
+from __future__ import annotations
+from typing import List, Tuple, Dict, Any, Optional
 from openai import OpenAI
 import os
+import json
 import logging
 
+# -----------------------------------------------------------------------------
+# Logging
+# -----------------------------------------------------------------------------
 logging.basicConfig(level=logging.DEBUG)
+logger = logging.getLogger(__name__)
 
+# -----------------------------------------------------------------------------
+# Config par défaut (surchargée par config.json et/ou arguments du ctor)
+# -----------------------------------------------------------------------------
+DEFAULT_OPENAI_CFG: Dict[str, Any] = {
+    "api_key": None,                 # si None, on lira OPENAI_API_KEY
+    "chat_model": "gpt-4o-mini",     # défaut rapide; tu peux mettre "gpt-5" via config
+    "temperature": 0.2,              # utilisé seulement si le modèle le supporte
+    "max_output_tokens": 96,
+    "reasoning_effort": "minimal",   # pris en compte si modèle = gpt-5*
+    "text_verbosity": "low",
+    "parallel_tool_calls": False,
+    "store": False
+}
+
+# -----------------------------------------------------------------------------
+# Utils
+# -----------------------------------------------------------------------------
+def _load_json_if_exists(path: str) -> Optional[Dict[str, Any]]:
+    try:
+        if os.path.exists(path):
+            with open(path, "r") as f:
+                return json.load(f)
+    except Exception as e:
+        logger.warning("Impossible de charger %s: %s", path, e)
+    return None
+
+
+def _merge_openai_cfg(base: Dict[str, Any], override: Optional[Dict[str, Any]]) -> Dict[str, Any]:
+    cfg = dict(base)
+    if override and isinstance(override, dict):
+        for k, v in override.items():
+            cfg[k] = v
+    return cfg
+
+
+def _model_caps(model_name: str) -> Dict[str, bool]:
+    """
+    Capacités selon le modèle choisi dynamiquement.
+    - GPT-5* (incl. nano) => reasoning param supporté, 'temperature' non supporté.
+    - 4o / 4o-mini / etc. => pas de reasoning, 'temperature' OK, 'verbosity' non supporté.
+    """
+    name = (model_name or "").lower()
+    is_gpt5_family = "gpt-5" in name
+    return {
+        "supports_reasoning": is_gpt5_family,
+        "supports_temperature": not is_gpt5_family,
+        "supports_verbosity": "gpt-4o" not in name,
+    }
+
+# -----------------------------------------------------------------------------
+# Classe principale
+# -----------------------------------------------------------------------------
 class chatGPT(object):
+    """
+    API simple, avec modèle dynamique:
+      chat(user_text, hist, *, model=None, temperature=None, max_output_tokens=None) -> str
+
+    - 'hist' est une liste de tuples (role, content), role ∈ {"user","assistant"}.
+    - si 'model' est fourni à l'appel, il override la config.
+    """
+
+    # ---------- Chargement config ----------
     @staticmethod
-    def _read_text_file(path):
-        try:
-            # utf-8-sig enlève un éventuel BOM
-            with open(path, 'r', encoding='utf-8-sig') as f:
-                return f.read()
-        except Exception:
-            return None
+    def _ensure_config(config: Optional[Dict[str, Any]]) -> Dict[str, Any]:
+        """
+        Priorités:
+        1) config passée au constructeur
+        2) config.json local (clé "openai")
+        3) DEFAULT_OPENAI_CFG
+        + injection OPENAI_API_KEY si manquant
+        """
+        final: Dict[str, Any] = {}
+        # défauts
+        final["openai"] = dict(DEFAULT_OPENAI_CFG)
+
+        # fichier config.json
+        file_cfg = _load_json_if_exists("config.json")
+        if file_cfg and isinstance(file_cfg.get("openai"), dict):
+            final["openai"] = _merge_openai_cfg(final["openai"], file_cfg["openai"])
+
+        # override appelant
+        if config:
+            if isinstance(config.get("openai"), dict):
+                final["openai"] = _merge_openai_cfg(final["openai"], config["openai"])
+            for k, v in config.items():
+                if k != "openai":
+                    final[k] = v
+
+        # API key
+        if not final["openai"].get("api_key"):
+            env = os.getenv("OPENAI_API_KEY")
+            if env:
+                final["openai"]["api_key"] = env
+
+        return final
+
+    # ---------- Système / client ----------
+    def __init__(self, config: Optional[Dict[str, Any]] = None, system_prompt: Optional[str] = None):
+        self.config = self._ensure_config(config)
+        self._client: Optional[OpenAI] = None
+        # Le prompt système final est maintenant construit et passé par pepperLife.py
+        self.system_prompt = system_prompt or "Ton nom est pepper"
 
     @staticmethod
-    def load_system_prompt(openai_cfg, base_dir):
-        # 1) on lit le fichier de base
-        base_prompt = ""
-        base_prompt_path = os.path.join(base_dir, "prompts", "system_prompt.txt")
-        content = chatGPT._read_text_file(base_prompt_path)
-        if content is not None:
-            base_prompt = content.strip()
+    def get_base_prompt() -> str:
+        """
+        Construit le prompt de base en combinant le custom_prompt de config.json
+        et le contenu de system_prompt.txt.
+        """
+        prompts = []
+
+        # 1. Charger le custom_prompt depuis config.json
+        # Le chemin est relatif au script pepperLife.py, donc on remonte de deux niveaux
+        config_path = os.path.abspath(os.path.join(os.path.dirname(__file__), '..', '..', 'config.json'))
+        config = _load_json_if_exists(config_path)
+        if config and isinstance(config.get("openai"), dict):
+            custom_prompt = config["openai"].get("custom_prompt")
+            if custom_prompt and custom_prompt.strip():
+                prompts.append(custom_prompt.strip())
+
+        # 2. Charger le prompt système depuis le fichier
+        prompt_path = os.path.abspath(os.path.join(os.path.dirname(__file__), "..", "..", "prompts", "system_prompt.txt"))
+        if os.path.exists(prompt_path):
+            try:
+                with open(prompt_path, "r", encoding='utf-8-sig') as f:
+                    text = f.read().strip()
+                    if text:
+                        prompts.append(text)
+            except Exception as e:
+                logger.warning("Lecture de system_prompt.txt échouée: %s", e)
+
+        # 3. Combiner ou retourner un défaut
+        if prompts:
+            return "\n\n".join(prompts)
         else:
-            print("[PROMPT] WARNING: impossible de lire prompts/system_prompt.txt")
+            return "Ton nom est pepper"  # Fallback si tout est vide
 
-        # 2) on ajoute le prompt de la config
-        sp = openai_cfg.get('custom_prompt')
-        if isinstance(sp, str):
-            base_prompt += "\n" + sp.strip()
-
-        return base_prompt
-
-    def __init__(self, config, system_prompt=None):
-        """
-        :param config: dict global de configuration
-        :param system_prompt: texte du prompt système déjà chargé (ex: depuis system_prompt_file).
-                              S'il est None, on tentera de lire config['openai'].get('system_prompt', '').
-        """
-        self.config = config
-        self._client = None
-        # priorité au prompt passé par l'appelant; fallback sur la conf; sinon vide
-        self.system_prompt = system_prompt or ''
-
-    def client(self):
+    def client(self) -> OpenAI:
         if self._client is None:
-            self._client = OpenAI(timeout=15.0)
+            api_key = self.config["openai"].get("api_key")
+            if not api_key:
+                raise RuntimeError("OPENAI_API_KEY manquant (config.openai.api_key)")
+            self._client = OpenAI(api_key=api_key)
         return self._client
 
-    def chat(self, user_text, hist):
+    # ---------- Construction des messages ----------
+    def _build_messages_without_system(self, user_text: str, hist: List[Tuple[str, str]]) -> List[Dict[str, str]]:
         """
-        :param user_text: texte utilisateur (str)
-        :param hist: historique sous forme de liste de tuples (role, content)
-                     où role ∈ {"user","assistant"}.
-        :return: str (réponse de l'assistant en une seule ligne)
+        Construit les messages SANS 'system' (on passe system via `instructions`).
+        La longueur de l'historique est maintenant configurable.
         """
-        msgs = []
-        if self.system_prompt:
-            msgs.append({"role": "system", "content": self.system_prompt})
-        # historique
-        for role, content in (hist or []):
-            msgs.append({"role": role, "content": content})
-        # message courant
+        history_len = self.config.get("openai", {}).get("history_length", 4)
+        trimmed = (hist or [])[-history_len:]
+        msgs = [{"role": r, "content": c} for (r, c) in trimmed if r in ("user", "assistant")]
         msgs.append({"role": "user", "content": user_text})
+        return msgs
 
+    # ---------- Appel au modèle ----------
+    def chat(
+        self,
+        user_text: str,
+        hist: Optional[List[Tuple[str, str]]] = None,
+        *,
+        model: Optional[str] = None,
+        temperature: Optional[float] = None,
+        max_output_tokens: Optional[int] = None
+    ) -> Tuple[str, Any]:
+        """
+        Renvoie une réponse courte et l'objet réponse brut de l'API.
+        - Modèle DYNAMIQUE (config ou override `model=...`)
+        - Reasoning minimal si et seulement si GPT-5*
+        - 'temperature' seulement si supporté
+        - Retry auto si l'API refuse 'temperature'
+        - Logs usage + cache + texte
+        """
+        oai = self.config["openai"]
+
+        # modèle dynamique: override > config > défaut
+        model_name = model or oai.get("chat_model") or "gpt-4o-mini"
+        caps = _model_caps(model_name)
+
+        messages = self._build_messages_without_system(user_text, hist or [])
+
+        # Base de la requête
+        req: Dict[str, Any] = {
+            "model": model_name,
+            "instructions": self.system_prompt,
+            "input": messages,
+            "max_output_tokens": oai.get("max_output_tokens") if max_output_tokens is None else max_output_tokens,
+            "parallel_tool_calls": oai.get("parallel_tool_calls", False),
+            "store": oai.get("store", False),
+        }
+
+        # Verbosity seulement si le modèle le supporte
+        if caps["supports_verbosity"]:
+            req["text"] = {"verbosity": oai.get("text_verbosity", "low")}
+
+        # Temperature seulement si le modèle le supporte
+        temp_value = oai.get("temperature") if temperature is None else temperature
+        if caps["supports_temperature"] and temp_value is not None:
+            req["temperature"] = temp_value
+
+        # Reasoning uniquement si GPT-5 et si l'effort n'est pas désactivé
+        reasoning_effort = oai.get("reasoning_effort")
+        if caps["supports_reasoning"] and reasoning_effort and reasoning_effort.lower() != 'none':
+            req["reasoning"] = {"effort": reasoning_effort}
+        # --- Appel + retry si refus de 'temperature' ---
+        resp = None
         try:
-            resp = self.client().chat.completions.create(
-                model=self.config['openai']['chat_model'],
-                messages=msgs,
-                temperature=1,
-                **({'max_completion_tokens': 60} if self.config['openai']['chat_model'] in ['gpt-5', 'gpt-5-mini'] else {'max_tokens': 60}),
-            )
-            logging.debug(f"OpenAI API Response: {resp}")
-            return (resp.choices[0].message.content or "").replace("\n", " ").strip()
+            resp = self.client().responses.create(**req)
         except Exception as e:
-            logging.error(f"Chatbot error: {e}")
-            # En cas d'erreur avec l'API, retourner un message d'erreur simple
-            return "Désolé, une erreur est survenue avec le service de chat."
+            msg = str(e)
+            if "Unsupported parameter" in msg and "temperature" in msg and "not supported" in msg:
+                logger.warning("Retry sans 'temperature' (modèle ne le supporte pas): %s", msg)
+                req.pop("temperature", None)
+                resp = self.client().responses.create(**req)
+            else:
+                logger.error("Responses API error: %s", e)
+                return "Désolé, une erreur est survenue avec le service de chat.", {"error": str(e)}
+
+        # Texte retourné
+        text = (getattr(resp, "output_text", "") or "").strip()
+        logging.debug("CHAT TEXT: %s", text)
+
+        # Usage + cache (si dispo)
+        u = getattr(resp, "usage", None)
+        cached = None
+        input_tokens = None
+        output_tokens = None
+        try:
+            input_tokens = getattr(u, "input_tokens", None)
+            output_tokens = getattr(u, "output_tokens", None)
+            details = getattr(u, "input_tokens_details", None)
+            if details:
+                cached = getattr(details, "cached_tokens", None)
+        except Exception:
+            pass
+        logging.info("USAGE: input=%s cached=%s output=%s", input_tokens, cached, output_tokens)
+
+        # Fallback de sécurité pour ne pas rester muet
+        if not text:
+            text = "^start(animations/Stand/BodyTalk/Listening/Listening) Je t’écoute."
+
+        return text.replace("\n", " ").strip(), resp

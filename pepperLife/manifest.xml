@@ -15,7 +15,7 @@
         <file path="python" />
     </executableFiles>
     <requirements>
-        <naoqiRequirement maxVersion="2.7" minVersion="2.5"/>
+        <naoqiRequirement maxVersion="2.9" minVersion="2.5"/>
         <robotRequirement model="JULIETTE"/>
     </requirements>
 </package>

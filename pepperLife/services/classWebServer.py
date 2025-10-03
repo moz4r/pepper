@@ -74,10 +74,10 @@ def ansi_to_html(text):
 
 try:
     from http.server import SimpleHTTPRequestHandler
-    from socketserver import TCPServer
+    from socketserver import TCPServer, ThreadingMixIn
 except ImportError:  # Py2 fallback (au cas où)
     from SimpleHTTPServer import SimpleHTTPRequestHandler
-    from SocketServer import TCPServer
+    from SocketServer import TCPServer, ThreadingMixIn
 
 from .classSystem import version as SysVersion
 
@@ -149,9 +149,13 @@ class WebServer(object):
 
     # —————— Serveur ——————
     def start(self, host='0.0.0.0', port=8080):
+        class ThreadingTCPServer(ThreadingMixIn, TCPServer):
+            allow_reuse_address = True
+            daemon_threads = True
+
         os.chdir(self._root_dir)
         self._logger('Web root: %s' % self._root_dir)
-        httpd = _TCPServer((host, port), self._make_handler())
+        httpd = ThreadingTCPServer((host, port), self._make_handler())
         httpd._root_dir = self._root_dir
         httpd._logger = self._logger
         httpd.session = self.session
@@ -162,7 +166,7 @@ class WebServer(object):
         th = threading.Thread(target=httpd.serve_forever)
         th.daemon = True
         th.start()
-        self._logger('WebServer started on %s:%s' % (host, port))
+        self._logger('WebServer (multi-threaded) started on %s:%s' % (host, port))
         return httpd
 
     def stop(self):
@@ -1415,11 +1419,7 @@ class WebServer(object):
 
         return Handler
 
-# ————————————————————————————————————————————————————————————
-# TCPServer custom : permet d'attacher des champs arbitraires
-# ————————————————————————————————————————————————————————————
-class _TCPServer(TCPServer):
-    allow_reuse_address = True
+
 
 # ————————————————————————————————————————————————————————————
 # Utilitaires

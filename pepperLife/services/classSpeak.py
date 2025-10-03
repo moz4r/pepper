@@ -84,5 +84,6 @@ class Speaker(object):
 
     def say_quick(self, text, intent=None):
         text = self._prep_text(text, intent=intent)
+        self.beh.log(f"[TTS] {text}", level='info')
         h = self._say_async(text)
         self._wait_tts_end(h, timeout=15.0)

@@ -3,6 +3,15 @@
 
 from openai import OpenAI
 
+def _log_sanitized_options(logger, opts):
+    try:
+        o = dict(opts)
+        if 'files' in o:
+            o.pop('files')
+        logger.debug('Request options (sanitized): %s', o)
+    except Exception:
+        pass
+
 class STT(object):
     def __init__(self, config, logger=None):
         self.config = config

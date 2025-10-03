@@ -39,8 +39,11 @@ def load_config():
     global CONFIG
 
     script_dir = os.path.dirname(os.path.abspath(__file__))
-    config_path = os.path.join(script_dir, 'config.json')
-    default_config_path = os.path.join(script_dir, 'config.json.default')
+config_dir = os.path.expanduser('~/.config/pepperlife')
+if not os.path.exists(config_dir):
+    os.makedirs(config_dir)
+config_path = os.path.join(config_dir, 'config.json')
+default_config_path = os.path.join(script_dir, 'config.json.default')
 
     if not os.path.exists(config_path):
         log("Le fichier config.json n'existe pas, création à partir de config.json.default...", level='warning', color=bcolors.WARNING)
@@ -252,12 +255,14 @@ def main():
     anim.health_check()
 
     try:
-        base_prompt = chatGPT.load_system_prompt(CONFIG.get('openai', {}), APP_DIR)
+        base_prompt = chatGPT.get_base_prompt()
         prompt_text, _ = build_system_prompt_in_memory(base_prompt, anim)
         SYSTEM_PROMPT = prompt_text
+        log(f"[PROMPT] Prompt système généré avec {len(prompt_text)} caractères.", level='debug')
     except Exception as e:
-        log(f"[PROMPT] Génération dynamique échouée: {e}", level='warning', color=bcolors.WARNING)
-        SYSTEM_PROMPT = chatGPT.load_system_prompt(CONFIG.get('openai', {}), APP_DIR)
+        log(f"[PROMPT] Génération dynamique ÉCHOUÉE: {e}", level='error', color=bcolors.FAIL)
+        # En cas d'erreur, on utilise un prompt minimal pour ne pas bloquer le chat
+        SYSTEM_PROMPT = "Ton nom est Pepper."
 
     leds = PepperLEDs(s, _logger)
     cap = Listener(s, CONFIG['audio'], _logger)
@@ -338,6 +343,8 @@ def main():
                     leds.idle()
                     continue
                 
+                # Passe immédiatement en mode "traitement" (violet) après l'enregistrement
+                leds.processing()
                 log(f"[PERF] Audio processing: {t_post_vad - t_vad_end:.2f}s", level='info', color=bcolors.OKCYAN)
 
                 try:
@@ -351,8 +358,7 @@ def main():
                         leds.idle()
                         continue
 
-                    leds.processing()
-                    
+                    # Déjà en mode processing, pas besoin de le rappeler ici
                     t_before_chat = time.time()
                     if vision_service._utterance_triggers_vision(txt.lower()):
                         png_bytes = vision_service.get_png()
@@ -371,9 +377,11 @@ def main():
                             speaker.say_quick("Je n'ai pas réussi à prendre de photo.")
                     else:
                         hist.append(("user", txt))
-                        rep = chat_service.chat(txt, hist[:-1])
+                        rep, raw_rep = chat_service.chat(txt, hist[:-1])
                         t_after_chat = time.time()
                         log(f"[PERF] Chat: {t_after_chat - t_before_chat:.2f}s", level='info', color=bcolors.OKCYAN)
+                        log(f"[GPT] {rep}", level='info', color=bcolors.OKGREEN)
+                        log(f"[GPT_FULL] {repr(raw_rep)}", level='debug')
                         hist.append(("assistant", rep))
                         hist = hist[-8:]
                         speaker.say_quick(rep)
