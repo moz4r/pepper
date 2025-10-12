@@ -10,7 +10,7 @@ SCRIPT_DIR="$( cd "$( dirname "${BASH_SOURCE[0]}" )" &> /dev/null && pwd )"
 export PATH="$SCRIPT_DIR:$PATH"
 
 # fix 2.5
-export LD_LIBRARY_PATH="/home/nao/opt/lib/libstdcpp:${LD_LIBRARY_PATH}"
+export LD_LIBRARY_PATH="/home/nao/.local/share/PackageManager/apps/pepperlife/bin/lib:${LD_LIBRARY_PATH}"
 
 # 2) Désactiver le user site-packages & pointer explicitement le site-packages Py3
 export PYTHONNOUSERSITE=1
