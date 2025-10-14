@@ -281,6 +281,25 @@ let statusPoller = null;
 let logsPollerDisabled = false;
 let lastRenderedLogs = [];
 let versionCheckDone = false; // Flag to ensure version check runs only once
+let versionStatusText = ''; // Persist version status indicator
+
+function parseVersionString(value) {
+  if (!value) return null;
+  const cleaned = value.trim().replace(/^v/i, '');
+  if (!/^\d+(\.\d+)*$/.test(cleaned)) return null;
+  return cleaned.split('.').map(n => parseInt(n, 10) || 0);
+}
+
+function compareVersionArrays(a, b) {
+  const max = Math.max(a.length, b.length);
+  for (let i = 0; i < max; i++) {
+    const diff = (a[i] || 0) - (b[i] || 0);
+    if (diff !== 0) {
+      return diff > 0 ? 1 : -1;
+    }
+  }
+  return 0;
+}
 
 function showNavTabs(show) {
   document.querySelectorAll('#nav a').forEach(a => {
@@ -319,6 +338,10 @@ function updateRobotStatus(status, data = null) {
     const localVersion = data.version || 'N/A';
     versionEl.innerHTML = '<div>' + localVersion + '</div>'; // Mettre la version dans un div
 
+    if (versionStatusText) {
+      versionEl.innerHTML += versionStatusText;
+    }
+
     // Ensuite, vérifie les mises à jour, mais une seule fois
     if (!versionCheckDone) {
       versionCheckDone = true; // Set flag to true
@@ -330,12 +353,22 @@ function updateRobotStatus(status, data = null) {
         .then(text => {
           const remoteVersion = text.trim();
           let statusText = '';
-          if (remoteVersion && localVersion.trim() !== remoteVersion) {
-            statusText = '<div class="version-status">(mise à jour disponible)</div>';
-          } else if (remoteVersion) {
-            statusText = '<div class="version-status">(à jour)</div>';
+          if (remoteVersion) {
+            const remoteParsed = parseVersionString(remoteVersion);
+            const localParsed = parseVersionString(localVersion);
+            if (remoteParsed && localParsed) {
+              const cmp = compareVersionArrays(localParsed, remoteParsed);
+              statusText = cmp < 0
+                ? '<div class="version-status">(mise à jour disponible)</div>'
+                : '<div class="version-status">(à jour)</div>';
+            } else if (remoteParsed) {
+              statusText = '<div class="version-status">(mise à jour disponible)</div>';
+            }
           }
-          versionEl.innerHTML += statusText;
+          if (statusText) {
+            versionStatusText = statusText;
+            versionEl.innerHTML += versionStatusText;
+          }
         })
         .catch(err => {
           console.error("La vérification de la version a échoué:", err);

@@ -1,12 +1,12 @@
 <?xml version="1.0" encoding="UTF-8"?>
-<package uuid="pepperlife" version="0.7.1">
+<package uuid="pepperlife" version="0.8.2">
     <names>
-        <name lang="en_US">PepperLife GPT - alpha</name>
-        <name lang="fr_FR">PepperLife GPT - alpha</name>
+        <name lang="en_US">PepperLife GPT</name>
+        <name lang="fr_FR">PepperLife GPT</name>
     </names>
     <descriptions>
-        <description lang="en_US">PepperLife robot settings and gpt ( http://IPROBOT:8080) </description>
-        <description lang="fr_FR">PepperLife robot settings et gpt ( http://IPROBOT:8080) </description>
+        <description lang="en_US">PepperLife robot settings and gpt ( reboot after install puis http://IPROBOT:8080 ) </description>
+        <description lang="fr_FR">PepperLife robot settings et gpt ( rebbot après l'installation puis http://IPROBOT:8080 ) </description>
     </descriptions>
     <services>
         <service autorun="true" name="pepperlife" execStart="python2 bin/lanceur.py" />
@@ -15,7 +15,7 @@
         <file path="python" />
     </executableFiles>
     <requirements>
-        <naoqiRequirement maxVersion="2.9" minVersion="2.5"/>
+        <naoqiRequirement maxVersion="2.9.9" minVersion="2.9"/>
         <robotRequirement model="JULIETTE"/>
     </requirements>
 </package>
