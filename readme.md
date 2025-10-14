@@ -1,6 +1,7 @@
 # PepperLife - NaoQI / Python3 / GPT
 
-![PepperLife Banner](https://github.com/user-attachments/assets/fba8f19b-ef94-4246-bdc5-7bd2d5027dfb)
+<img width="1160" height="761" alt="image" src="https://github.com/user-attachments/assets/f0549f60-1085-4d97-abdf-b462770610f9" />
+
 
 **PepperLife** est un projet open-source qui vise à doter le robot **Pepper** de capacités d'interaction avancées en le connectant à des modèles de langage (LLM) de pointe comme GPT-4o, GPT-4o-mini ou GPT-5 d'OpenAI, selon votre configuration. Il transforme Pepper en un assistant plus intelligent, capable de comprendre, de voir, de parler et d'interagir de manière fluide et naturelle.
 
@@ -105,19 +106,7 @@ Pour que le chatbot fonctionne, vous devez fournir votre clé d'API OpenAI. Vous
 ### Personnalisation de la synthèse vocale
 Certaines prononciations problématiques peuvent être corrigées en éditant le fichier `lang/map/tts_replacements.txt`. Chaque ligne suit la forme `mot_original=mot_remplace` (les lignes vides ou précédées de `#` sont ignorées). Pepper remplacera ces mots juste avant l'envoi au TTS.
 
----
 
-## 📸 Interface Web
-
-Voici un aperçu de l'interface de contrôle :
-
-**Tableau de bord principal :**
-<img width="1793" height="1094" alt="Tableau de bord" src="https://github.com/user-attachments/assets/6023eaa0-73cd-4122-aaf8-fed1d9683fe4" />
-
-**Gestion des applications et animations :**
-<img width="1788" height="912" alt="Gestion des applications" src="https://github.com/user-attachments/assets/80b240a6-6386-4046-a6a1-7a6ed2476ead" />
-
----
 
 ## 🙌 Contribution
 
