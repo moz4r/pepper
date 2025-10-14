@@ -11,13 +11,6 @@ from typing import List, Tuple, Dict, Any, Optional
 from openai import OpenAI
 import os
 import json
-import logging
-
-# -----------------------------------------------------------------------------
-# Logging
-# -----------------------------------------------------------------------------
-logging.basicConfig(level=logging.DEBUG)
-logger = logging.getLogger(__name__)
 
 # -----------------------------------------------------------------------------
 # Config par défaut (surchargée par config.json et/ou arguments du ctor)
@@ -36,13 +29,13 @@ DEFAULT_OPENAI_CFG: Dict[str, Any] = {
 # -----------------------------------------------------------------------------
 # Utils
 # -----------------------------------------------------------------------------
-def _load_json_if_exists(path: str) -> Optional[Dict[str, Any]]:
+def _load_json_if_exists(path: str, logger) -> Optional[Dict[str, Any]]:
     try:
         if os.path.exists(path):
             with open(path, "r") as f:
                 return json.load(f)
     except Exception as e:
-        logger.warning("Impossible de charger %s: %s", path, e)
+        logger("Impossible de charger %s: %s" % (path, e), level='warning')
     return None
 
 
@@ -80,60 +73,31 @@ class chatGPT(object):
     - si 'model' est fourni à l'appel, il override la config.
     """
 
-    # ---------- Chargement config ----------
-    @staticmethod
-    def _ensure_config(config: Optional[Dict[str, Any]]) -> Dict[str, Any]:
-        """
-        Priorités:
-        1) config passée au constructeur
-        2) config.json local (clé "openai")
-        3) DEFAULT_OPENAI_CFG
-        + injection OPENAI_API_KEY si manquant
-        """
-        final: Dict[str, Any] = {}
-        # défauts
-        final["openai"] = dict(DEFAULT_OPENAI_CFG)
-
-        # fichier config.json
-        file_cfg = _load_json_if_exists("config.json")
-        if file_cfg and isinstance(file_cfg.get("openai"), dict):
-            final["openai"] = _merge_openai_cfg(final["openai"], file_cfg["openai"])
-
-        # override appelant
-        if config:
-            if isinstance(config.get("openai"), dict):
-                final["openai"] = _merge_openai_cfg(final["openai"], config["openai"])
-            for k, v in config.items():
-                if k != "openai":
-                    final[k] = v
-
+    # ---------- Système / client ----------
+    def __init__(self, config: Optional[Dict[str, Any]] = None, system_prompt: Optional[str] = None, logger=None):
+        self.config = config or {}
+        self.log = logger or (lambda msg, **kwargs: print(msg))
         # API key
-        if not final["openai"].get("api_key"):
+        if not self.config.get("openai", {}).get("api_key"):
             env = os.getenv("OPENAI_API_KEY")
             if env:
-                final["openai"]["api_key"] = env
+                if "openai" not in self.config:
+                    self.config["openai"] = {}
+                self.config["openai"]["api_key"] = env
 
-        return final
-
-    # ---------- Système / client ----------
-    def __init__(self, config: Optional[Dict[str, Any]] = None, system_prompt: Optional[str] = None):
-        self.config = self._ensure_config(config)
         self._client: Optional[OpenAI] = None
-        # Le prompt système final est maintenant construit et passé par pepperLife.py
         self.system_prompt = system_prompt or "Ton nom est pepper"
 
     @staticmethod
-    def get_base_prompt() -> str:
+    def get_base_prompt(config=None, logger=None):
         """
         Construit le prompt de base en combinant le custom_prompt de config.json
         et le contenu de system_prompt.txt.
         """
+        log = logger or (lambda msg, **kwargs: print(msg))
         prompts = []
 
         # 1. Charger le custom_prompt depuis config.json
-        # Le chemin est relatif au script pepperLife.py, donc on remonte de deux niveaux
-        config_path = os.path.abspath(os.path.join(os.path.dirname(__file__), '..', '..', 'config.json'))
-        config = _load_json_if_exists(config_path)
         if config and isinstance(config.get("openai"), dict):
             custom_prompt = config["openai"].get("custom_prompt")
             if custom_prompt and custom_prompt.strip():
@@ -148,7 +112,7 @@ class chatGPT(object):
                     if text:
                         prompts.append(text)
             except Exception as e:
-                logger.warning("Lecture de system_prompt.txt échouée: %s", e)
+                log("Lecture de system_prompt.txt échouée: %s" % e, level='warning')
 
         # 3. Combiner ou retourner un défaut
         if prompts:
@@ -232,16 +196,16 @@ class chatGPT(object):
         except Exception as e:
             msg = str(e)
             if "Unsupported parameter" in msg and "temperature" in msg and "not supported" in msg:
-                logger.warning("Retry sans 'temperature' (modèle ne le supporte pas): %s", msg)
+                self.log("Retry sans 'temperature' (modèle ne le supporte pas): %s" % msg, level='warning')
                 req.pop("temperature", None)
                 resp = self.client().responses.create(**req)
             else:
-                logger.error("Responses API error: %s", e)
+                self.log("Responses API error: %s" % e, level='error')
                 return "Désolé, une erreur est survenue avec le service de chat.", {"error": str(e)}
 
         # Texte retourné
         text = (getattr(resp, "output_text", "") or "").strip()
-        logging.debug("CHAT TEXT: %s", text)
+        self.log(f"CHAT TEXT: {text}", level='debug')
 
         # Usage + cache (si dispo)
         u = getattr(resp, "usage", None)
@@ -256,10 +220,10 @@ class chatGPT(object):
                 cached = getattr(details, "cached_tokens", None)
         except Exception:
             pass
-        logging.info("USAGE: input=%s cached=%s output=%s", input_tokens, cached, output_tokens)
+        self.log(f"USAGE: input={input_tokens} cached={cached} output={output_tokens}", level='info')
 
         # Fallback de sécurité pour ne pas rester muet
         if not text:
-            text = "^start(animations/Stand/BodyTalk/Listening/Listening) Je t’écoute."
+            text = "%%Stand/BodyTalk/Listening/Listening%% Je t’écoute."
 
         return text.replace("\n", " ").strip(), resp

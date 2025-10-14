@@ -94,7 +94,7 @@ class Vision(object):
                 self.sub = self.cam.subscribeCamera(name, self.current_camera_index, self.res, self.color, self.fps)
                 self.log(f"[Cam] Resubscribed to camera {self.current_camera_index}")
             except Exception as e:
-                self.log(f"[Cam] Failed to subscribe to camera {self.current_camera_index}: {e}", level='error')
+                self.log(u"[Cam] Échec de la souscription à la caméra {}: {}".format(self.current_camera_index, e), level='error')
                 self.sub = None
                 return False
 

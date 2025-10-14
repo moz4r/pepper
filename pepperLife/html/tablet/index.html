@@ -83,6 +83,7 @@
         <div class="topbar">
         <div class="title">PepperLife <span class="version">%VER%</span></div>
         <div class="actions">
+            <a href="http://198.18.0.1:8080/" class="btn">ADMIN</a>
             <div class="volume-slider-container">
                 <input type="range" min="0" max="100" step="1" value="80" class="volume-slider" id="volume-slider">
             </div>
@@ -221,6 +222,13 @@
                 ipAddresses.textContent = data.ip_addresses.join(', ');
                 internetStatus.textContent = data.internet_connected ? 'OUI' : 'NON';
                 internetStatus.className = 'internet-status ' + (data.internet_connected ? 'on' : 'off');
+            });
+            fetch('/api/mic/status').then(res => res.json()).then(data => {
+                if (data.enabled) {
+                    statusDot.classList.add('listening');
+                } else {
+                    statusDot.classList.remove('listening');
+                }
             });
         }
 

@@ -71,6 +71,7 @@ export function init(api) {
   async function refreshLife() {
     try {
       const data = await api.lifeState();
+      if (data.error) throw new Error(data.error);
       
       // Populate dropdown if not already populated
       if (lifeSelect.options.length <= 1) {
@@ -125,6 +126,7 @@ export function init(api) {
   async function refreshPosture() {
     try {
       const data = await api.postureState();
+      if (data.error) throw new Error(data.error);
       const isAwake = data.is_awake;
       postureSelect.value = isAwake ? 'awake' : 'rest';
       postureStatus.textContent = isAwake ? 'Debout' : 'Au repos';

@@ -9,8 +9,38 @@ const API_BASE = (() => {
     return 'http://' + hostname + ':8088';
 })();
 
-async function jget(url){ const r = await fetch(API_BASE + url, {cache:'no-store'}); if(!r.ok) throw new Error(await r.text()); return r.json(); }
-async function jpost(url, data){ const r = await fetch(API_BASE + url,{ method:'POST', headers:{'Content-Type':'application/json'}, body: JSON.stringify(data||{})}); if(!r.ok) throw new Error(await r.text()); return r.json().catch(async()=>({text: await r.text()})); }
+async function jget(url) {
+    const r = await fetch(API_BASE + url, {cache: 'no-store'});
+    if (!r.ok) {
+        const errorText = await r.text();
+        throw new Error(errorText || `HTTP error ${r.status}`);
+    }
+    const data = await r.json();
+    if (data.error) {
+        throw new Error(data.error);
+    }
+    return data;
+}
+async function jpost(url, data) {
+    const r = await fetch(API_BASE + url, {
+        method: 'POST',
+        headers: {'Content-Type': 'application/json'},
+        body: JSON.stringify(data || {})
+    });
+
+    if (!r.ok) {
+        const errorText = await r.text();
+        throw new Error(errorText || `HTTP error ${r.status}`);
+    }
+
+    // Vérifier si la réponse est bien du JSON avant de la parser
+    const contentType = r.headers.get("content-type");
+    if (contentType && contentType.indexOf("application/json") !== -1) {
+        return r.json();
+    } else {
+        return { text: await r.text() };
+    }
+}
 
 export const api = {
   getVersion: ()=> fetch(API_BASE + '/api/version').then(r => r.text()),
@@ -19,6 +49,7 @@ export const api = {
   systemInfo: ()=> jget('/api/system/info'),
   restartRobot: () => jpost('/api/system/restart'),
   shutdownRobot: () => jpost('/api/system/shutdown'),
+  clearSystemLogs: () => jpost('/api/system/clear_logs'),
   systemStatus: ()=> jget('/api/system/status'),
   cameraStartStream: () => jpost('/api/camera/start_stream'),
   cameraStopStream: () => jpost('/api/camera/stop_stream'),
@@ -28,11 +59,11 @@ export const api = {
   volumeState: ()=> jget('/api/volume/state'),
   volumeSet: (v)=> jpost('/api/volume/set',{volume:v}),
   micToggle: ()=> jget('/api/mic_toggle'),
+  micStatus: ()=> jget('/api/mic/status'),
   lifeState: ()=> jget('/api/autonomous_life/state'),
   lifeSetState: (st)=> jpost('/api/autonomous_life/set_state', {state: st}),
   postureState: ()=> jget('/api/posture/state'),
   postureSetState: (st)=> jpost('/api/posture/set_state', {state: st}),
-  // Extended endpoints to implement in classWebServer (or proxy to qi):
   wifiScan: ()=> jget('/api/wifi/scan'),
   wifiConnect: (ssid, psk)=> jpost('/api/wifi/connect',{ssid, psk}),
   wifiStatus: ()=> jget('/api/wifi/status'),
@@ -52,9 +83,14 @@ export const api = {
   logsTail: (n)=> jget('/api/logs/tail?n='+(n||200)),
   // Chat API
   getChatStatus: () => jget('/api/chat/status'),
+  getDetailedChatStatus: () => jget('/api/chat/detailed_status'),
   startChat: (mode) => jpost('/api/chat/start', { mode: mode }),
   stopChat: () => jpost('/api/chat/stop'),
+  getSystemPrompt: () => jget('/api/system_prompt'),
+  setSystemPrompt: (content) => jpost('/api/system_prompt', { content: content }),
   // TTS Language
   getTtsLanguages: () => jget('/api/tts/languages'),
   setTtsLanguage: (lang) => jpost('/api/tts/set_language', { language: lang }),
+  // Generic getter for new endpoints
+  get: (url) => jget(url),
 };

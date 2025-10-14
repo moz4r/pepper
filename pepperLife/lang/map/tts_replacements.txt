@@ -1,0 +1,5 @@
+# Mapping des remplacements TTS.
+# Format : mot_original=mot_remplacé
+# Les lignes commençant par # sont ignorées.
+
+explorer=exploré

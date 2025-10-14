@@ -46,6 +46,7 @@ class LauncherService:
         self.logger = logger or logging.getLogger(__name__)
         self.process = None
         self.logs = collections.deque(maxlen=200)
+        self.service_status = "Checking..."
 
     def _read_pipe(self, pipe):
         try:
@@ -60,40 +61,39 @@ class LauncherService:
         runner_path = '/home/nao/.local/share/PackageManager/apps/python3nao/bin/runpy3.sh'
         return os.path.exists(runner_path)
 
+    def _get_runner_path(self):
+        """Retourne le chemin correct du runpy3.sh en fonction de la version de NAOqi."""
+        default_runner_path = '/home/nao/.local/share/PackageManager/apps/python3nao/bin/runpy3.sh'
+        try:
+            system_service = self.session.service("ALSystem")
+            naoqi_version = system_service.systemVersion()
+            self.logger.info("Version de NAOqi détectée: {}".format(naoqi_version))
+
+            if "2.5" in naoqi_version:
+                self.logger.info("NAOqi 2.5 détecté. Utilisation du lanceur local.")
+                local_runner_path = '/home/nao/.local/share/PackageManager/apps/pepperlife/bin/runpy3.sh'
+                if os.path.exists(local_runner_path):
+                    return local_runner_path
+                else:
+                    self.logger.warning("Le lanceur local pour NAOqi 2.5 est introuvable. Utilisation du lanceur par défaut.")
+            else:
+                self.logger.info("Utilisation du lanceur par défaut pour NAOqi 2.9+.")
+        except Exception as e:
+            self.logger.error("Impossible de récupérer la version de NAOqi: {}. Utilisation du lanceur par défaut.".format(e))
+        
+        return default_runner_path
+
     def launch(self):
         if self.is_running():
-            self.logger.warning("Le processus principal est dÃ©jÃ  en cours d'exÃ©cution.")
+            self.logger.warning("Le processus principal est déjà en cours d'exécution.")
             return True
 
         self.logs.clear()
         script_path = '/home/nao/.local/share/PackageManager/apps/pepperlife/pepperLife.py'
-        
-        # DÃ©finir le chemin par dÃ©faut du lanceur
-        runner_path = '/home/nao/.local/share/PackageManager/apps/python3nao/bin/runpy3.sh'
-
-        try:
-            # RÃ©cupÃ©rer la version de NAOqi
-            system_service = self.session.service("ALSystem")
-            naoqi_version = system_service.systemVersion()
-            self.logger.info("Version de NAOqi dÃ©tectÃ©e: {}".format(naoqi_version))
-
-            # VÃ©rifier si la version est 2.5
-            if "2.5" in naoqi_version:
-                self.logger.info("NAOqi 2.5 dÃ©tectÃ©. Utilisation du lanceur local.")
-                # Chemin vers le runpy3.sh local du projet
-                local_runner_path = '/home/nao/.local/share/PackageManager/apps/pepperlife/bin/runpy3.sh'
-                if os.path.exists(local_runner_path):
-                    runner_path = local_runner_path
-                else:
-                    self.logger.warning("Le lanceur local pour NAOqi 2.5 est introuvable Ã : {}. Utilisation du lanceur par dÃ©faut.".format(local_runner_path))
-            else:
-                self.logger.info("Utilisation du lanceur par dÃ©faut pour NAOqi 2.9+.")
-
-        except Exception as e:
-            self.logger.error("Impossible de rÃ©cupÃ©rer la version de NAOqi: {}. Utilisation du lanceur par dÃ©faut.".format(e))
+        runner_path = self._get_runner_path()
 
         if not os.path.exists(runner_path):
-            err_msg = "Le lanceur python3 est introuvable Ã : {}".format(runner_path)
+            err_msg = "Le lanceur python3 est introuvable à: {}".format(runner_path)
             self.logger.error(err_msg)
             self.logs.append("ERREUR: {}".format(err_msg))
             return False
@@ -115,7 +115,6 @@ class LauncherService:
         if self.process and self.process.poll() is None:
             return True
         
-        # Si le processus existe mais ne tourne plus, c'est qu'il vient de se terminer.
         if self.process:
             exit_code = self.process.poll()
             self.logger.info("Le processus s'est terminé avec le code: {}".format(exit_code))
@@ -135,9 +134,7 @@ class LauncherService:
             pgid = os.getpgid(self.process.pid)
             self.logger.info("Arrêt du groupe de processus avec PGID: {}".format(pgid))
             os.killpg(pgid, signal.SIGTERM)
-            # Attendre un peu pour laisser le temps au processus de se terminer proprement
-            time.sleep(1) # Un court délai peut aider
-            # Vérifier s'il est toujours en cours d'exécution
+            time.sleep(1)
             if self.is_running():
                 self.logger.warning("Le processus n'a pas répondu à SIGTERM, envoi de SIGKILL.")
                 os.killpg(pgid, signal.SIGKILL)
@@ -147,6 +144,47 @@ class LauncherService:
         except Exception as e:
             self.logger.error("Erreur lors de l'arrêt du processus: {}".format(e))
             return False
+
+    def start_pepper_life_service(self):
+        self.logger.info("Tentative de démarrage du service PepperLife NaoQI...")
+        runner_path = self._get_runner_path()
+
+        if not os.path.exists(runner_path):
+            self.logger.error("  -> Le lanceur Python 3 est introuvable. Impossible de démarrer le service.")
+            self.service_status = "FAILED"
+            return False
+
+        service_script_path = '/home/nao/.local/share/PackageManager/apps/pepperlife/bin/pepper_life_service.py'
+        command = [runner_path, service_script_path]
+
+        try:
+            subprocess.Popen(command, preexec_fn=os.setsid)
+            self.logger.info("  -> Commande de lancement envoyée. Attente de 3 secondes pour la vérification...")
+            time.sleep(3)
+
+            self.session.service("PepperLifeService")
+            self.service_status = "OK"
+            self.logger.info("  -> VÃ©rification rÃ©ussie. Service PepperLife NaoQI : OK")
+            self.logs.append("Service PepperLife NaoQI : OK")
+            return True
+        except Exception as e:
+            self.service_status = "FAILED"
+            self.logger.error("  -> Ã‰chec du dÃ©marrage ou de la vÃ©rification du service PepperLife: {}".format(e))
+            self.logs.append("Service PepperLife NaoQI : FAILED ({})".format(e))
+            return False
+
+    def restart_pepper_life_service(self):
+        self.logger.info("Tentative de redémarrage du service PepperLife NaoQI...")
+        try:
+            # Tenter d'arrêter proprement le service existant
+            self.logger.info("  -> Arrêt de l'ancien processus de service (si existant)...")
+            subprocess.call(['pkill', '-f', 'pepper_life_service.py'])
+            time.sleep(1) # Laisser le temps au processus de se terminer
+        except Exception as e:
+            self.logger.warning("  -> N'a pas pu arrêter l'ancien service (ce n'est peut-être pas un problème): {}".format(e))
+        
+        # Démarrer le nouveau service
+        return self.start_pepper_life_service()
 
 # ==============================================================================
 # 2. SERVEUR WEB : SERT L'UI ET L'API REST
@@ -184,7 +222,6 @@ def ansi_to_html(text):
 class WebHandler(SimpleHTTPRequestHandler):
     def __init__(self, *args, **kwargs):
         self.launcher = kwargs.pop('launcher', None)
-        # super() ne fonctionne pas avec les old-style classes de Python 2
         SimpleHTTPRequestHandler.__init__(self, *args, **kwargs)
 
     def _json_response(self, code, payload):
@@ -200,7 +237,8 @@ class WebHandler(SimpleHTTPRequestHandler):
         if path == '/api/launcher/status':
             status = {
                 'is_running': self.launcher.is_running(),
-                'python_runner_installed': self.launcher.is_python_runner_installed()
+                'python_runner_installed': self.launcher.is_python_runner_installed(),
+                'service_status': self.launcher.service_status
             }
             self._json_response(200, status)
         elif path == '/api/launcher/logs':
@@ -208,7 +246,6 @@ class WebHandler(SimpleHTTPRequestHandler):
             html_logs = [ansi_to_html(log) for log in raw_logs]
             self._json_response(200, {'logs': html_logs})
         else:
-            # Servir les fichiers statiques
             SimpleHTTPRequestHandler.do_GET(self)
 
     def do_POST(self):
@@ -219,13 +256,13 @@ class WebHandler(SimpleHTTPRequestHandler):
         elif path == '/api/launcher/stop':
             result = self.launcher.stop()
             self._json_response(200, {'success': result})
+        elif path == '/api/service/restart':
+            result = self.launcher.restart_pepper_life_service()
+            self._json_response(200, {'success': result})
         else:
             self._json_response(404, {'error': 'Not Found'})
 
 def start_web_server(logger, port, root_dir, launcher_service):
-    """DÃ©marre le serveur HTTP multi-thread dans un thread sÃ©parÃ©."""
-
-    # DÃ©finition d'un serveur qui gÃ¨re chaque requÃªte dans un thread distinct
     class ThreadingHTTPServer(ThreadingMixIn, HTTPServer):
         daemon_threads = True
 
@@ -240,8 +277,6 @@ def start_web_server(logger, port, root_dir, launcher_service):
             logger.info("[WebServer] DÃ©marrage du serveur multi-thread sur {}:{}, racine: {}".format(host, port, root_dir))
 
         def run(self):
-            # os.chdir n'est pas thread-safe, mais on le garde pour minimiser les changements
-            # par rapport Ã  la version originale.
             os.chdir(root_dir)
             self.server.serve_forever()
 
@@ -277,29 +312,35 @@ def main():
         sh.setFormatter(formatter)
         logger.addHandler(sh)
     
-    logger.info("--- DÃ©marrage du service PepperLifeLauncher ---")
+    logger.info("--- Démarrage du service PepperLifeLauncher ---")
 
-    app = None
-    while app is None:
+    try:
+        app = qi.Application(sys.argv)
+    except Exception as e:
+        logger.error("Impossible de créer l'instance qi.Application: {}".format(e))
+        sys.exit(1)
+
+    is_connected = False
+    while not is_connected:
         try:
             logger.info("Tentative de connexion Ã  NAOqi...")
-            app = qi.Application(sys.argv)
             app.start()
+            app.session.service("ALSystem")
+            logger.info("Connexion Ã  NAOqi et ALSystem rÃ©ussie.")
+            is_connected = True
         except Exception as e:
             logger.warning("Connexion Ã  NAOqi Ã©chouÃ©e: {}. Nouvelle tentative dans 5s...".format(e))
             time.sleep(5)
 
-    logger.info("Connexion Ã  NAOqi rÃ©ussie.")
-
-    # Le service NAOqi n'est plus nÃ©cessaire, mais on garde la logique de lancement
     # dans la classe LauncherService pour la clartÃ©.
     service_instance = LauncherService(app.session, logger)
 
-    # DÃ©marrer le serveur web et lui passer l'instance du service
+    logger.info("Lancement du service NaoQI...")
+    service_instance.start_pepper_life_service()
+
     web_root = os.path.abspath(os.path.join(script_dir, '..', 'html'))
     web_server_thread = start_web_server(logger, 8080, web_root, service_instance)
 
-    # On n'enregistre plus de service NAOqi, on attend juste la fin du programme
     logger.info("Serveur web dÃ©marrÃ©. Attente de la fin du programme (Ctrl+C).")
     try:
         while True:

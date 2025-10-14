@@ -14,6 +14,7 @@ export function render(root){
   async function refresh(){
     try {
       const d = await api.postureState();
+      if (d.error) throw new Error(d.error);
       const isAwake = d.is_awake;
       statusEl.textContent = isAwake ? 'Debout' : 'Au repos';
       statusEl.classList.remove('ok', 'off');

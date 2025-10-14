@@ -10,7 +10,7 @@ class PepperLEDs(object):
         try: 
             self.leds.fadeRGB(group, int(rgb), float(dur))
         except Exception as e:
-            self.log(f"[LEDs] Failed to set {group}: {e}", level='warning')
+            self.log(u"[LEDs] Échec de la configuration de {}: {}".format(group, e), level='warning')
 
     # Oreilles (ON = il peut écouter)
     def ears_on(self):  self._set("LeftEarLeds", 0x0000FF); self._set("RightEarLeds", 0x0000FF)
@@ -41,3 +41,47 @@ class PepperLEDs(object):
 
     def speaking_stop(self):
         self.idle()                # retour BLANC + oreilles ON
+
+import time
+import threading
+
+def led_management_thread(stop_event, session, leds, listener):
+    """
+    Thread dédié à la gestion des LEDs en fonction de l'état réel du robot.
+    """
+    leds.log("Démarrage du thread de gestion des LEDs.", level='info')
+    pls = None
+    last_state = {}
+
+    while not stop_event.is_set():
+        try:
+            if pls is None:
+                pls = session.service("PepperLifeService")
+
+            is_listening = listener.on  # 'on' est l'état d'enregistrement
+            service_state = pls.get_state()
+            
+            current_state = {
+                'listening': is_listening,
+                'speaking': service_state.get('speaking', False),
+                'thinking': service_state.get('thinking', False)
+            }
+
+            if current_state != last_state:
+                if current_state['listening']:
+                    leds.listening_recording()
+                elif current_state['speaking']:
+                    leds.speaking_start()
+                elif current_state['thinking']:
+                    leds.processing()
+                else:
+                    leds.idle()
+                last_state = current_state
+
+        except Exception as e:
+            leds.log("Erreur dans le thread de gestion des LEDs: {}".format(e), level='error')
+            pls = None  # Tenter de se reconnecter au service
+        
+        time.sleep(0.2)
+    leds.log("Arrêt du thread de gestion des LEDs.", level='info')
+

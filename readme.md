@@ -2,20 +2,21 @@
 
 ![PepperLife Banner](https://github.com/user-attachments/assets/fba8f19b-ef94-4246-bdc5-7bd2d5027dfb)
 
-**PepperLife** est un projet open-source qui vise à doter le robot **Pepper** de capacités d'interaction avancées en le connectant à des modèles de langage (LLM) de pointe comme GPT-4o d'OpenAI. Il transforme Pepper en un assistant plus intelligent, capable de comprendre, de voir, de parler et d'interagir de manière fluide et naturelle.
+**PepperLife** est un projet open-source qui vise à doter le robot **Pepper** de capacités d'interaction avancées en le connectant à des modèles de langage (LLM) de pointe comme GPT-4o, GPT-4o-mini ou GPT-5 d'OpenAI, selon votre configuration. Il transforme Pepper en un assistant plus intelligent, capable de comprendre, de voir, de parler et d'interagir de manière fluide et naturelle.
 
 ---
 
 ## 🚀 Fonctionnalités Principales
 
-- **🗣️ Conversation Intelligente** : Dialogue fluide et naturel grâce au modèle `gpt-4o-mini`.
+- **🗣️ Conversation Intelligente** : Dialogue fluide et naturel avec sélection dynamique entre `gpt-4o-mini`, `gpt-4o`, `gpt-5` (ou tout modèle compatible configuré).
 - **👁️ Vision Intégrée** : Demandez à Pepper ce qu'il voit ("que vois-tu ?") et il décrira la scène en utilisant ses caméras.
 - **🎙️ Transcription en Temps Réel** : Écoute active via streaming audio et transcription précise avec `gpt-4o-mini-transcribe` (ou `whisper-1` en solution de repli).
 - **🕺 Animations Dynamiques** : Le LLM peut déclencher des animations contextuelles (`^start(...)`) à partir d'un catalogue généré automatiquement, rendant l'interaction plus vivante.
-- **💡 Indicateurs LED Intuitifs** : Les LEDs de Pepper changent de couleur pour indiquer son état : **Bleu** (écoute), **Violet** (réflexion), **Blanc** (parole/attente).
+- **💡 Indicateurs LED & Animations Intuitifs** : Les LEDs passent en **Bleu** (écoute), **Violet** (réflexion), **Blanc** (parole/attente) et des boucles d'animations dédiées différencient réflexion et prise de parole.
 - **🔇 Gestion Audio Avancée** : Systèmes anti-larsen et anti-bruit pour une meilleure qualité audio.
 - **🌐 Interface Web de Contrôle** : Une interface web complète pour gérer le robot, surveiller son état, et configurer ses fonctionnalités.
 - **🧩 Architecture Modulaire** : Le système est conçu en classes Python normalisées (`classLEDs`, `classAnimation`, etc.) pour une maintenance et une évolution facilitées.
+- **⚙️ Service Unifié NAOqi** : `pepper_life_service.py` harmonise les API NAOqi 2.5 et 2.9 via un service commun, garantissant une compatibilité multi-firmware.
 
 ---
 
@@ -27,8 +28,8 @@ Le système suit un pipeline simple mais puissant :
 2.  **Transcription (STT)** : L'audio est envoyé à l'API d'OpenAI pour être transformé en texte.
 3.  **Compréhension (Chat)** : Le texte est envoyé au modèle de langage (LLM) pour générer une réponse.
 4.  **Action** : La réponse est utilisée pour :
-    *   Faire parler le robot (TTS).
-    *   Déclencher des animations.
+    *   Faire parler le robot (TTS) avec animations de parole synchronisées.
+    *   Déclencher des animations de réflexion ou scénarisées selon le contexte.
     *   Exécuter des commandes spécifiques.
 
 ---
@@ -50,6 +51,8 @@ Le projet nécessite que les services suivants soient actifs sur le robot :
 - `ALAnimatedSpeech`
 - `ALVideoDevice`
 - `ALBehaviorManager`
+
+`PepperLifeService` encapsule ces dépendances et route automatiquement vers les implémentations NAOqi 2.5 ou 2.9 adaptées, sans configuration supplémentaire.
 
 ---
 
@@ -92,12 +95,15 @@ Une fois l'application installée, le service de lancement démarre automatiquem
     ```
 3.  Depuis cette interface, vous pouvez :
     *   **Démarrer et arrêter** les services principaux de PepperLife.
-    *   **Activer ou désactiver** le chatbot GPT-4o.
+    *   **Activer, désactiver ou choisir** le moteur GPT utilisé (4o-mini rapide, 4o complet, 5 raisonnement minimal).
     *   **Gérer et lancer** des applications ou des animations.
     *   **Consulter les logs** et l'état du robot.
 
 ### Configuration de la clé OpenAI
 Pour que le chatbot fonctionne, vous devez fournir votre clé d'API OpenAI. Vous pouvez le faire via l'interface web dans l'onglet **Settings**.
+
+### Personnalisation de la synthèse vocale
+Certaines prononciations problématiques peuvent être corrigées en éditant le fichier `lang/map/tts_replacements.txt`. Chaque ligne suit la forme `mot_original=mot_remplace` (les lignes vides ou précédées de `#` sont ignorées). Pepper remplacera ces mots juste avant l'envoi au TTS.
 
 ---
 
@@ -119,4 +125,4 @@ Les contributions sont les bienvenues ! Si vous souhaitez améliorer PepperLife,
 
 ## 📄 Licence
 
-Ce projet est distribué sous la licence MIT. Voir le fichier `LICENSE` pour plus de détails.
+Ce projet est distribué sous la licence Creative Commons Attribution-NonCommercial-ShareAlike 4.0 International (CC BY-NC-SA 4.0). Voir le fichier `LICENSE` pour le texte complet.

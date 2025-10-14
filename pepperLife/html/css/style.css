@@ -7,7 +7,7 @@ nav{display:flex;flex-wrap:wrap;gap:6px}
 nav a{padding:8px 10px;border-radius:10px;border:1px solid #334155;background:#16213c;color:var(--fg);text-decoration:none}
 nav a.active{border-color:#7c9cff}
 .grid{display:grid;grid-template-columns:repeat(12,1fr);gap:12px}
-.card{grid-column:span 12;background:var(--panel);border:1px solid #1e293b;border-radius:14px;padding:14px;box-shadow:0 6px 20px rgba(0,0,0,.25)}
+.card{background:var(--panel);border:1px solid #1e293b;border-radius:14px;padding:14px;box-shadow:0 6px 20px rgba(0,0,0,.25)}
 @media(min-width:760px){.span-4{grid-column:span 4}.span-6{grid-column:span 6}.span-8{grid-column:span 8}.span-12{grid-column:span 12}}
 .title{font-weight:600;margin-bottom:8px;letter-spacing:.2px}
 .row{display:flex;align-items:center;gap:12px;flex-wrap:wrap}

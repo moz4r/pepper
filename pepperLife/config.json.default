@@ -12,7 +12,8 @@
     "_comment_preroll": "Nb de chunks audio (10ms chacun) gardés en mémoire avant le début de la parole. Augmenter si le début des phrases est coupé.",
     "preroll_chunks": 16,
     "agc_target": 20000,
-    "speech_cooldown": 2.0
+    "speech_cooldown": 2.0,
+    "add_wait_tag": true
   },
   "openai": {
     "_comment": "Configuration pour les modèles OpenAI, le prompt système et la clé API. Si laissée vide, la variable d'environnement OPENAI_API_KEY sera utilisée.",
@@ -67,5 +68,10 @@
     "boot_vieAutonome": true,
     "boot_reveille": true,
     "start_chatbot_on_boot": false
+  },
+  "animations": {
+    "_comment": "Configuration pour activer/désactiver certaines animations.",
+    "enable_startup_animation": true,
+    "enable_thinking_gesture": true
   }
 }

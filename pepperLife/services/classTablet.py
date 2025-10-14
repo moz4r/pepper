@@ -13,8 +13,8 @@ class classTablet(object):
     Permet de fournir la version via un provider (callable) ou un fichier.
     """
     def __init__(self, session=None, logger=None, port=8088,
-                 version_text=u"dev", version_file=None, version_provider=None, mic_toggle_callback=None, listener=None, speaker=None, vision_service=None,
-                 start_chat_callback=None, stop_chat_callback=None, get_chat_status_callback=None, anim=None):
+                 version_text="dev", version_file=None, version_provider=None, mic_toggle_callback=None, listener=None, speaker=None, vision_service=None,
+                 start_chat_callback=None, stop_chat_callback=None, get_chat_status_callback=None, get_detailed_chat_status_callback=None, anim=None, config_changed_callback=None):
         self.session = session
         self._log = logger or (lambda msg, **k: print(msg))
         self.port = int(port)
@@ -30,7 +30,7 @@ class classTablet(object):
         self.script_dir = os.path.dirname(os.path.abspath(__file__))
         self.ui_dir = os.path.join(os.path.dirname(self.script_dir), "html")
         
-        self.web_server = WebServer(root_dir=self.ui_dir, session=self.session, logger=self._log, anim=anim)
+        self.web_server = WebServer(root_dir=self.ui_dir, session=self.session, logger=self._log)
         self.web_server.mic_toggle_callback = self.mic_toggle_callback
         self.web_server.listener = self.listener
         self.web_server.speaker = self.speaker
@@ -39,6 +39,8 @@ class classTablet(object):
         self.web_server.start_chat_callback = start_chat_callback
         self.web_server.stop_chat_callback = stop_chat_callback
         self.web_server.get_chat_status_callback = get_chat_status_callback
+        self.web_server.get_detailed_chat_status_callback = get_detailed_chat_status_callback
+        self.web_server.config_changed_callback = config_changed_callback
 
         self.tablet = None
         self.last_capture = None
@@ -130,6 +132,14 @@ class classTablet(object):
 
     def set_last_capture(self, image_bytes):
         self.last_capture = image_bytes
+        if image_bytes:
+            try:
+                capture_path = os.path.join(self.ui_dir, "last_capture.png")
+                with open(capture_path, "wb") as f:
+                    f.write(image_bytes)
+                self._log("[Tablet] Saved last_capture.png", level='debug')
+            except Exception as e:
+                self._log("[Tablet] Failed to write last_capture.png: %s" % e, level='error')
 
     def show_last_capture_on_tablet(self):
         if not self.tablet:

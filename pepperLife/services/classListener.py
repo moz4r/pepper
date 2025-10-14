@@ -43,7 +43,12 @@ class Listener(object):
         self.lock = threading.Lock()
         self.speaking = False
         self.speech_stop_time = 0
-        self.speech_cooldown = audio_config.get('speech_cooldown', 2.0)
+        configured_cooldown = audio_config.get('speech_cooldown', 2.0)
+        try:
+            configured_cooldown = float(configured_cooldown)
+        except Exception:
+            configured_cooldown = 2.0
+        self.speech_cooldown = max(1.0, configured_cooldown)
 
         self.memory = s.service("ALMemory")
         self.tts_subscriber = self.memory.subscriber("ALTextToSpeech/Status")

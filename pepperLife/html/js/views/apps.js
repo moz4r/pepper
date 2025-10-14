@@ -8,15 +8,15 @@ function renderState(state) {
 }
 
 // Helper to render a row
-function renderRow(app, runningBehaviors) {
-    const isRunning = runningBehaviors && runningBehaviors.includes(app.name);
+function renderRow(app) {
+    const isRunning = app.status === 'running';
     const rowClass = isRunning ? 'running-row' : '';
 
     let buttons = 'Non supporté';
     if (app.runnable) {
         buttons = `
-          <button class="btn" data-action="start" data-name="${app.name}" ${app.status === 'running' ? 'disabled' : ''}>Démarrer</button>
-          <button class="btn secondary" data-action="stop" data-name="${app.name}" ${app.status !== 'running' ? 'disabled' : ''}>Arrêter</button>
+          <button type="button" class="btn" data-action="start" data-name="${app.name}" ${isRunning ? 'disabled' : ''}>Démarrer</button>
+          <button type="button" class="btn secondary" data-action="stop" data-name="${app.name}" ${!isRunning ? 'disabled' : ''}>Arrêter</button>
         `;
     }
     return `
@@ -89,20 +89,18 @@ export function render(root){
       
       version_display.textContent = `NAOqi v${r.naoqi_version || 'inconnue'}`;
 
-      const runningBehaviors = r.running_behaviors || [];
-
       // Populate Applications
       if (!r.applications || r.applications.length === 0) {
         apps_tbody.innerHTML = '<tr><td colspan="4">Aucune application principale trouvée.</td></tr>';
       } else {
-        apps_tbody.innerHTML = r.applications.map(app => renderRow(app, runningBehaviors)).join('');
+        apps_tbody.innerHTML = r.applications.map(app => renderRow(app)).join('');
       }
 
       // Populate Animations
       if (!r.animations || r.animations.length === 0) {
         anims_tbody.innerHTML = '<tr><td colspan="4">Aucune animation trouvée.</td></tr>';
       } else {
-        anims_tbody.innerHTML = r.animations.map(app => renderRow(app, runningBehaviors)).join('');
+        anims_tbody.innerHTML = r.animations.map(app => renderRow(app)).join('');
       }
 
     } catch (e) {
@@ -111,14 +109,21 @@ export function render(root){
     }
   }
 
-  // Event listener needs to be on a parent element
+  // Event listener on the parent element for delegation
   el.addEventListener('click', async (e) => {
-    const action = e.target.dataset.action;
-    const name = e.target.dataset.name;
+    const button = e.target.closest('button[data-action]');
+    if (!button) return;
+
+    const action = button.dataset.action;
+    const name = button.dataset.name;
     if (!action || !name) return;
 
-    e.target.disabled = true;
-    e.target.textContent = '...';
+    e.preventDefault();
+    e.stopPropagation();
+
+    const originalContent = button.innerHTML;
+    button.disabled = true;
+    button.innerHTML = '<span class="inline-spinner"></span>';
 
     try {
       if (action === 'start') {
@@ -126,10 +131,18 @@ export function render(root){
       } else if (action === 'stop') {
         await api.appStop(name);
       }
-      setTimeout(refresh, 1000);
+      // Laisser un court délai, puis rafraîchir en conservant le scroll
+      setTimeout(async () => {
+        const scrollY = window.scrollY;
+        await refresh();
+        window.scrollTo(0, scrollY);
+      }, 1500);
+
     } catch (err) {
       alert(`Erreur: ${err.message || err}`);
-      refresh(); // Refresh to restore button state
+      // Restaurer immédiatement en cas d'erreur
+      button.disabled = false;
+      button.innerHTML = originalContent;
     }
   });
 

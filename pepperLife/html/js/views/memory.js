@@ -68,7 +68,9 @@ export function render(root, api){
     valueEdit.value = '';
 
     try {
-      const value = await api.memoryGet(selectedKey);
+      const response = await api.memoryGet(selectedKey);
+      // La valeur qui nous intéresse est dans la propriété 'value' de la réponse.
+      const value = response.value;
       const valueStr = JSON.stringify(value, null, 2);
       valuePre.textContent = valueStr;
       valueEdit.value = valueStr;
