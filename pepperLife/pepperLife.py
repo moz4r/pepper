@@ -3,10 +3,13 @@ import faulthandler
 faulthandler.enable() 
 # pepper_poc_chat_main.py — NAOqi + OpenAI (STT + Chat + Vision) réactif
 
-import sys, time, os, atexit, json, random, traceback, threading
+import sys, time, os, atexit, json, threading
 
 from services.classSystem import bcolors, build_system_prompt_in_memory, load_config, handle_exception
-from services.classLEDs import led_management_thread
+from services.classLEDs import PepperLEDs, led_management_thread
+
+# Forcer l'I/O Python en UTF-8 (évite les erreurs d'encodage sur NAOqi 2.5)
+os.environ.setdefault("PYTHONIOENCODING", "utf-8")
 
 CONFIG = {
     "log": { "verbosity": 2 }
@@ -40,7 +43,7 @@ def install_requirements(packages_to_install):
     for req in packages_to_install:
         try:
             log("Installation de {}...".format(req), level='info')
-            subprocess.check_call([pip_executable, "install", req])
+            subprocess.check_call([pip_executable, "install", "--upgrade", req])
         except subprocess.CalledProcessError as e:
             log("Erreur lors de l'installation de {}: {}".format(req, e), level='error', color=bcolors.FAIL)
             sys.exit(1)
@@ -96,15 +99,14 @@ def main():
     CONFIG = load_config(_logger)
     check_requirements()
 
-    from services.classLEDs import PepperLEDs
+    from services.chatBots.chatGPT import chatGPT
+    from services.chatBots.ollama import ChatOllama
+    from services.classChat import ChatManager
+
     from services.classListener import Listener
     from services.classSpeak import Speaker
-    from services.classASRFilters import is_noise_utterance, is_recent_duplicate
-    from services.classAudioUtils import avgabs
     from services.classTablet import classTablet
     from services.classSystem import version as SysVersion
-    from services.classSTT import STT
-    from services.chatBots.chatGPT import chatGPT
     from services.classVision import Vision
 
     log(r"""
@@ -116,15 +118,6 @@ def main():
 
     IP = CONFIG['connection']['ip']
     PORT = CONFIG['connection']['port']
-    BLACKLIST_STRICT = set(CONFIG['asr_filters']['blacklist_strict'])
-
-    VAD_PROFILES = {
-        1: (1.3, 1.05, 0.8), 2: (1.6, 1.1, 0.6), 3: (2.0, 1.2, 0.5),
-        4: (2.5, 1.3, 0.4), 5: (3.0, 1.5, 0.3)
-    }
-    vad_level = CONFIG['audio'].get('vad_level', 3)
-    start_mult, stop_mult, SILHOLD = VAD_PROFILES.get(vad_level, VAD_PROFILES[3])
-
     s = None
     try:
         import qi
@@ -151,12 +144,7 @@ def main():
         sys.exit(1)
 
     al_dialog = s.service("ALDialog")
-
-    chat_thread = None
-    chat_stop_event = None
-    led_thread = None
-    led_stop_event = None
-    CHAT_STATE = {'status': 'stopped'}
+    chat_manager = None
 
     autolife_stop_event = threading.Event()
     def autolife_watchdog(stop_event, robot_version_str):
@@ -173,36 +161,73 @@ def main():
 
         try:
             autolife = s.service("ALAutonomousLife")
+            last_dialog_restart = 0.0
             while not stop_event.is_set():
                 try:
-                    is_gpt_running = chat_thread and chat_thread.is_alive()
+                    is_gpt_running = chat_manager.is_running() if chat_manager else False
                     
                     # Déterminer si ALDialog est actif en utilisant la méthode appropriée
                     is_dialog_active = False
                     try:
-                        if is_29:
-                            is_dialog_active = bool(al_dialog.getAllLoadedTopics())
-                        else:
-                            is_dialog_active = al_dialog.isListening()
+                        status_info = None
+                        if hasattr(al_dialog, 'getStatus'):
+                            status_info = al_dialog.getStatus()
+                            log("Watchdog: ALDialog.getStatus() -> {}".format(status_info), level='debug')
+                        state_label = None
+                        if isinstance(status_info, dict):
+                            state_label = status_info.get('state') or status_info.get('status')
+                        elif isinstance(status_info, (list, tuple)) and status_info:
+                            state_label = status_info[0]
+                        elif isinstance(status_info, str):
+                            state_label = status_info
+                        if isinstance(state_label, str):
+                            lowered = state_label.lower()
+                            if any(token in lowered for token in ('run', 'running', 'actif', 'active', 'start', 'listening')):
+                                is_dialog_active = True
+                        if not is_dialog_active and hasattr(al_dialog, 'getAllLoadedTopics'):
+                            try:
+                                topics = al_dialog.getAllLoadedTopics()
+                                log("Watchdog: ALDialog.getAllLoadedTopics() -> {}".format(topics), level='debug')
+                                if topics:
+                                    is_dialog_active = True
+                            except Exception:
+                                pass
+                        if not is_dialog_active and hasattr(al_dialog, 'isDialogRunning'):
+                            try:
+                                is_dialog_active = bool(al_dialog.isDialogRunning())
+                            except Exception:
+                                pass
+                        if not is_dialog_active and hasattr(al_dialog, 'isListening'):
+                            try:
+                                is_dialog_active = bool(al_dialog.isListening())
+                            except Exception:
+                                pass
                     except Exception as e:
                         log("Watchdog: Impossible de vérifier l'état de ALDialog: {}".format(e), level='debug')
 
                     if is_gpt_running:
-                        if is_dialog_active and not is_29:
+                        if not is_29 and is_dialog_active:
                             log("Watchdog: Le chatbot est actif, mais ALDialog semble tourner. Arrêt de ALDialog (uniquement pour < 2.9).", level='warning')
                             try:
                                 al_dialog.stopDialog()
                             except Exception as e:
                                 log("Watchdog: Erreur en tentant d'arrêter ALDialog: {}".format(e), level='debug')
                     else:
-                        # Si le chatbot est inactif, ne redémarrer ALDialog que sur les anciennes versions
-                        if not is_dialog_active and not is_29:
-                            log("Watchdog: Le chatbot est inactif et ALDialog ne semble pas tourner. Redémarrage de ALDialog.", level='info')
-                            try:
-                                al_dialog.resetAll()
-                                al_dialog.runDialog()
-                            except Exception as e:
-                                log("Watchdog: Erreur en tentant de redémarrer ALDialog: {}".format(e), level='error')
+                        if not is_29:
+                            if not is_dialog_active:
+                                now = time.time()
+                                if now - last_dialog_restart > 15.0:
+                                    log("Watchdog: Le chatbot est inactif et ALDialog ne semble pas tourner. Redémarrage de ALDialog.", level='info')
+                                    try:
+                                        al_dialog.resetAll()
+                                        al_dialog.runDialog()
+                                        last_dialog_restart = now
+                                    except Exception as e:
+                                        log("Watchdog: Erreur en tentant de redémarrer ALDialog: {}".format(e), level='error')
+                                else:
+                                    log("Watchdog: Redémarrage ALDialog déjà tenté récemment, on attend.", level='debug')
+                            else:
+                                log("Watchdog: ALDialog est déjà actif (mode < 2.9).", level='debug')
                 except Exception as e:
                     log("Erreur dans le watchdog: {}".format(e), level='error')
                 stop_event.wait(2.0)
@@ -214,271 +239,83 @@ def main():
 
     leds = PepperLEDs(s, _logger)
     cap = Listener(s, CONFIG['audio'], _logger)
-    
+    SYSTEM_PROMPT = "Ton nom est Pepper."
+    SYSTEM_PROMPT_OLLAMA = "Ton nom est Pepper."
+
     try:
         pls = s.service("PepperLifeService")
         anim_families = pls.getAnimationFamilies()
         base_prompt = chatGPT.get_base_prompt(config=CONFIG, logger=_logger)
         prompt_text, _ = build_system_prompt_in_memory(base_prompt, anim_families)
         SYSTEM_PROMPT = prompt_text
+        ollama_base_prompt = ChatOllama.get_base_prompt(config=CONFIG, logger=_logger)
+        prompt_text_ollama, _ = build_system_prompt_in_memory(ollama_base_prompt, anim_families)
+        SYSTEM_PROMPT_OLLAMA = prompt_text_ollama
         log("[PROMPT] Prompt système généré avec {} familles d'animations.".format(len(anim_families)), level='debug')
     except Exception as e:
         log("[PROMPT] Génération dynamique ÉCHOUÉE: {}".format(e), level='error', color=bcolors.FAIL)
         SYSTEM_PROMPT = "Ton nom est Pepper."
+        SYSTEM_PROMPT_OLLAMA = "Ton nom est Pepper."
 
     speaker = Speaker(s, _logger, CONFIG)
     vision_service = Vision(CONFIG, s, _logger)
 
-    atexit.register(cap.close)
-    atexit.register(vision_service.stop_camera)
+    chat_manager = ChatManager(
+        config=CONFIG,
+        session=s,
+        log_fn=log,
+        logger=_logger,
+        speaker=speaker,
+        leds=leds,
+        listener=cap,
+        vision_service=vision_service,
+        led_thread_fn=led_management_thread,
+        al_dialog=al_dialog
+    )
+    chat_manager.set_system_prompts(SYSTEM_PROMPT, SYSTEM_PROMPT_OLLAMA)
 
-    def run_chat_loop(stop_event, s):
+    def _reload_config(reason=None):
+        global CONFIG
+        nonlocal SYSTEM_PROMPT, SYSTEM_PROMPT_OLLAMA
         try:
-            posture_service = s.service("ALRobotPosture")
-            posture_service.goToPosture("Stand", 0.8)
+            updated_config = load_config(_logger)
+            CONFIG = updated_config
+            msg = "Configuration rechargée."
+            if reason:
+                msg = f"{msg} ({reason})"
+            log(msg, level='info')
         except Exception as e:
-            log("Impossible de réinitialiser la posture: {}".format(e), level='warning')
+            log("Échec du rechargement de la configuration: {}".format(e), level='error')
+            return
 
-        CHAT_STATE['status'] = 'starting'
         try:
-            log("Démarrage du thread du chatbot GPT...", level='info')
-            model_used = CONFIG.get('openai', {}).get('chat_model', 'gpt-4o-mini (default)')
-            log("[Chat] Utilisation du modèle : {}".format(model_used), level='info', color=bcolors.OKCYAN)
-            stt_service = STT(CONFIG, _logger)
-            chat_service = chatGPT(CONFIG, system_prompt=SYSTEM_PROMPT, logger=_logger)
-            api_key = CONFIG['openai'].get('api_key')
-            if api_key: os.environ['OPENAI_API_KEY'] = api_key
-            if not os.getenv("OPENAI_API_KEY"):
-                log("Clé OpenAI absente.", level='error', color=bcolors.FAIL)
-                speaker.say_quick("Clé OpenAI absente.")
-                CHAT_STATE['status'] = 'error'
-                return
+            pls = s.service("PepperLifeService")
+            anim_families = pls.getAnimationFamilies()
+            base_prompt = chatGPT.get_base_prompt(config=CONFIG, logger=_logger)
+            SYSTEM_PROMPT, _ = build_system_prompt_in_memory(base_prompt, anim_families)
+            ollama_base_prompt = ChatOllama.get_base_prompt(config=CONFIG, logger=_logger)
+            SYSTEM_PROMPT_OLLAMA, _ = build_system_prompt_in_memory(ollama_base_prompt, anim_families)
+        except Exception as e:
+            log("Impossible de régénérer les prompts systèmes après rechargement config: {}".format(e), level='warning')
 
-            cap.start()
-            vision_service.start_camera()
-            cap.warmup(min_chunks=8, timeout=2.0)
-            hist, hist_vision = [], []
-            base = CONFIG['audio'].get('override_base_sensitivity')
-            if not base:
-                log("Calibration du bruit (2s)...", level='info')
-                vals = []
-                for _ in range(50):
-                    with cap.lock:
-                        audio_chunk = b"" if not cap.mon else b"".join(cap.mon[-8:])
-                    vals.append(avgabs(audio_chunk))
-                    time.sleep(0.04)
-                base = int(sum(vals) / max(1, len(vals)))
-                log("Calibration terminée. Bruit de base: {}".format(base), level='info')
-            
-            START = max(4, int(base * start_mult))
-            STOP = max(3, int(base * stop_mult))
-
-            def say_and_wait(text):
-                speaker.say_quick(text)
-                try:
-                    pls = s.service("PepperLifeService")
-                    start_wait = time.time()
-                    while pls.get_state()['speaking']:
-                        if stop_event.is_set() or (time.time() - start_wait > 15):
-                            log("Timeout en attente de la fin de la parole.", level='warning')
-                            break
-                        time.sleep(0.1)
-                except Exception as e:
-                    log("Erreur en attente de la fin de la parole: {}".format(e), level='error')
-                
-                # Ajout d'un nettoyage explicite pour éviter l'auto-écoute
-                log("Parole terminée, nettoyage des tampons audio et petite pause.", level='debug')
-                with cap.lock:
-                    cap.mon[:] = []
-                    cap.pre[:] = []
-                time.sleep(0.2) # Petite pause pour laisser le son se dissiper
-
-            if CONFIG.get('animations', {}).get('enable_startup_animation', True):
-                try:
-                    log("Génération d'une phrase de démarrage pour le chatbot...", level='info')
-                    startup_phrase, _ = chat_service.chat("tu viens de te reveiller dis quelque chose", [])
-                    say_and_wait(startup_phrase)
-                except Exception as e:
-                    log("Impossible de générer la phrase de démarrage: {}".format(e), level='error')
-                    say_and_wait("Je suis réveillé !")
-            else:
-                say_and_wait("Je suis prêt.")
-            
-            CHAT_STATE['status'] = 'running'
-
-            try:
-                pls = s.service("PepperLifeService")
-            except Exception as e:
-                log("Impossible de se connecter à PepperLifeService. Les états ne seront pas vérifiés. Erreur: {}".format(e), level='error')
-                pls = None
-
-            while not stop_event.is_set():
-                asr_duration, gpt_duration, tts_duration = 0.0, 0.0, 0.0
-
-                if pls:
-                    try:
-                        state = pls.get_state()
-                        if not cap.is_micro_enabled() or state['speaking'] or state['animating']:
-                            time.sleep(0.1)
-                            continue
-                    except Exception as e:
-                        log("Erreur lors de la récupération de l'état de PepperLifeService: {}".format(e), level='warning')
-                        time.sleep(0.5) # Pause en cas d'erreur
-                        continue
-                else: # Fallback si le service n'est pas dispo
-                    if not cap.is_micro_enabled() or cap.is_speaking():
-                        time.sleep(0.1)
-                        continue
-
-                with cap.lock:
-                    audio_chunk = b"" if not cap.mon else b"".join(cap.mon[-8:])
-                vol = avgabs(audio_chunk)
-                if vol < START:
-                    time.sleep(0.05)
-                    continue
-
-                thinking_anim_name = ""
-                if CONFIG.get('animations', {}).get('enable_thinking_gesture', True):
-                    try:
-                        pls = s.service("PepperLifeService")
-                        thinking_anim_name = pls.startRandomThinkingGesture()
-                    except Exception as e:
-                        log("[ANIM] Échec du démarrage de l'action de réflexion via le service: {}".format(e), level='warning')
-
-                rep = None
-                try:
-                    cap.start_recording()
-                    t0 = time.time(); last = t0
-                    while time.time() - t0 < 5.0:
-                        with cap.lock:
-                            recent = b"" if not cap.mon else b"".join(cap.mon[-3:])
-                        fr = recent[-320:] if len(recent) >= 320 else recent
-                        e = avgabs(fr)
-                        if e >= STOP: last = time.time()
-                        if time.time() - last > SILHOLD: break
-                        time.sleep(0.02)
-                    wav = cap.stop_recording(STOP)
-
-                    if wav:
-                        t_before_stt = time.time()
-                        txt = stt_service.stt(wav)
-                        t_after_stt = time.time()
-                        asr_duration = t_after_stt - t_before_stt
-                        log("[ASR] " + str(txt), level='info')
-
-                        if txt and not is_noise_utterance(txt, BLACKLIST_STRICT) and not is_recent_duplicate(txt):
-                            t_before_chat = time.time()
-                            if vision_service._utterance_triggers_vision(txt.lower()):
-                                png_bytes = vision_service.get_png()
-                                if png_bytes:
-                                    _tablet_ui.set_last_capture(png_bytes)
-                                    _tablet_ui.show_last_capture_on_tablet()
-                                    rep = vision_service.vision_chat(txt, png_bytes, hist_vision)
-                                    hist_vision.extend([("user", txt), ("assistant", rep)])
-                                    hist_vision = hist_vision[-6:]
-                                else:
-                                    rep = "Je n'ai pas réussi à prendre de photo."
-                            else:
-                                hist.append(("user", txt))
-                                rep, raw_rep = chat_service.chat(txt, hist[:-1])
-                                log("[GPT] {}".format(rep), level='info', color=bcolors.OKGREEN)
-                                log("[GPT_FULL] {}".format(repr(raw_rep)), level='debug')
-                                hist.append(("assistant", rep))
-                                hist = hist[-8:]
-                            t_after_chat = time.time()
-                            gpt_duration = t_after_chat - t_before_chat
-                except Exception as e:
-                    log("[ERR] " + str(e), level='error', color=bcolors.FAIL)
-                    rep = "Petit pépin réseau, on réessaie."
-                finally:
-                    if thinking_anim_name:
-                        try:
-                            pls = s.service("PepperLifeService")
-                            pls.stopThink(thinking_anim_name)
-                        except Exception as e:
-                            log("[ANIM] Impossible d'arrêter la réflexion: {}".format(e), level='warning')
-
-                if rep:
-                    t_before_say_quick = time.time()
-                    speaker.say_quick(rep)
-                    
-                    try:
-                        pls = s.service("PepperLifeService")
-                        start_wait = time.time()
-                        while pls.get_state()['speaking']:
-                            if stop_event.is_set() or (time.time() - start_wait > 15):
-                                log("Timeout en attente de la fin de la parole.", level='warning')
-                                break
-                            time.sleep(0.1)
-                    except Exception as e:
-                        log("Erreur en attente de la fin de la parole: {}".format(e), level='error')
-
-                    t_after_say_quick = time.time()
-                    tts_duration = t_after_say_quick - t_before_say_quick
-                    log("Durée du chat : ASR {:.2f}s / GPT {:.2f}s / TTS {:.2f}s".format(asr_duration, gpt_duration, tts_duration), level='info', color=bcolors.OKCYAN)
-        finally:
-            log("Arrêt du thread du chatbot.", level='info')
-            if CHAT_STATE['status'] != 'error':
-                CHAT_STATE['status'] = 'stopped'
-            cap.stop()
+        chat_manager.update_config(CONFIG)
+        chat_manager.set_system_prompts(SYSTEM_PROMPT, SYSTEM_PROMPT_OLLAMA)
+        speaker.config = CONFIG
+        if hasattr(vision_service, 'config'):
+            vision_service.config = CONFIG
 
     def start_chat(mode='gpt'):
-        nonlocal chat_thread, chat_stop_event, led_thread, led_stop_event
-        if chat_thread and chat_thread.is_alive():
-            log("Un chat est déjà en cours.", level='warning')
-            stop_chat()
-        
-        if mode == 'gpt':
-            log("Arrêt de ALDialog pour le mode GPT.", level='info')
-            try: al_dialog.stopDialog()
-            except Exception as e: log("Erreur lors de l'arrêt de ALDialog: {}".format(e), level='error')
-            
-            led_stop_event = threading.Event()
-            led_thread = threading.Thread(target=led_management_thread, args=(led_stop_event, s, leds, cap))
-            led_thread.daemon = True
-            led_thread.start()
-
-            chat_stop_event = threading.Event()
-            chat_thread = threading.Thread(target=run_chat_loop, args=(chat_stop_event, s))
-            chat_thread.daemon = True
-            chat_thread.start()
-        else:
-            log("Mode 'basic' activé.", level='info')
-            try:
-                al_dialog.resetAll()
-                al_dialog.runDialog()
-            except Exception as e: log("Erreur au démarrage de ALDialog: {}".format(e), level='error')
-            speaker.say_quick("Mode de base activé.")
+        _reload_config(f"démarrage du chat ({mode})")
+        chat_manager.start(mode)
 
     def stop_chat():
-        nonlocal chat_thread, chat_stop_event, led_thread, led_stop_event
-        if led_thread and led_thread.is_alive():
-            log("Arrêt du thread de gestion des LEDs...", level='info')
-            led_stop_event.set()
-            led_thread.join(timeout=2)
-        led_thread = None
+        chat_manager.stop()
 
-        if chat_thread and chat_thread.is_alive():
-            log("Demande d'arrêt du thread du chatbot...", level='info')
-            chat_stop_event.set()
-            chat_thread.join(timeout=5)
-        chat_thread = None
-        
-        CHAT_STATE['status'] = 'stopped'
-        log("Chatbot arrêté. Passage en mode de base.", level='info')
-        try:
-            al_dialog.resetAll()
-            al_dialog.runDialog()
-        except Exception as e: log("Erreur au démarrage de ALDialog: {}".format(e), level='error')
-        speaker.say_quick("Le chatbot est arrêté.")
+    def on_config_changed(_patch):
+        _reload_config("mise à jour via l'interface")
 
-    def get_chat_status():
-        is_running = chat_thread and chat_thread.is_alive()
-        current_mode = 'gpt' if is_running else 'basic'
-        return {'mode': current_mode, 'is_running': is_running}
-
-    def get_detailed_chat_status():
-        return CHAT_STATE
+    atexit.register(cap.close)
+    atexit.register(vision_service.stop_camera)
 
     def toggle_micro():
         is_enabled = cap.toggle_micro()
@@ -489,10 +326,16 @@ def main():
     _tablet_ui = classTablet(
         session=s, logger=_logger, port=8088, version_provider=SysVersion.get,
         mic_toggle_callback=toggle_micro, listener=cap, speaker=speaker, vision_service=vision_service,
-        start_chat_callback=start_chat, stop_chat_callback=stop_chat, get_chat_status_callback=get_chat_status,
-        get_detailed_chat_status_callback=get_detailed_chat_status
+        start_chat_callback=start_chat, stop_chat_callback=stop_chat,
+        get_chat_status_callback=chat_manager.get_status,
+        get_detailed_chat_status_callback=chat_manager.get_detailed_status,
+        chat_send_callback=chat_manager.send_debug_prompt,
+        config_changed_callback=on_config_changed
     )
     _tablet_ui.start(show=True)
+    chat_manager.attach_tablet(_tablet_ui)
+
+    _reload_config("initialisation")
 
     # beh.boot() # No longer needed as it's part of the service
     if CONFIG.get('boot', {}).get('boot_vieAutonome', True):

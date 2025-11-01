@@ -86,8 +86,121 @@ export const api = {
   getDetailedChatStatus: () => jget('/api/chat/detailed_status'),
   startChat: (mode) => jpost('/api/chat/start', { mode: mode }),
   stopChat: () => jpost('/api/chat/stop'),
-  getSystemPrompt: () => jget('/api/system_prompt'),
-  setSystemPrompt: (content) => jpost('/api/system_prompt', { content: content }),
+  chatSend: (payload) => jpost('/api/chat/send', payload),
+  chatSendStream: async (payload, { onChunk } = {}) => {
+    const requestPayload = Object.assign({}, payload, { debug_stream: true });
+    const response = await fetch(API_BASE + '/api/chat/send', {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json',
+        'Accept': 'application/x-ndjson',
+        'X-Debug-Stream': '1'
+      },
+      body: JSON.stringify(requestPayload || {})
+    });
+
+    if (!response.ok) {
+      const errorText = await response.text();
+      throw new Error(errorText || `HTTP error ${response.status}`);
+    }
+
+    const events = [];
+    const notify = (event) => {
+      events.push(event);
+      if (typeof onChunk === 'function') {
+        try {
+          onChunk(event);
+        } catch (err) {
+          console.warn('chatSendStream onChunk error', err);
+        }
+      }
+    };
+
+    let finalResult = null;
+
+    if (!response.body || typeof response.body.getReader !== 'function') {
+      const data = await response.json();
+      const event = { type: 'result', result: data };
+      notify(event);
+      return { result: data, events };
+    }
+
+    const reader = response.body.getReader();
+    const decoder = new TextDecoder();
+    let buffer = '';
+
+    try {
+      while (true) {
+        const { done, value } = await reader.read();
+        if (value) {
+          buffer += decoder.decode(value, { stream: true });
+          let newlineIndex;
+          while ((newlineIndex = buffer.indexOf('\n')) !== -1) {
+            const line = buffer.slice(0, newlineIndex).trim();
+            buffer = buffer.slice(newlineIndex + 1);
+            if (!line) {
+              continue;
+            }
+            let event;
+            try {
+              event = JSON.parse(line);
+            } catch (_) {
+              continue;
+            }
+            notify(event);
+            if (event.type === 'result') {
+              finalResult = event.result;
+            } else if (event.type === 'error') {
+              const err = new Error(event.error || 'Erreur de streaming.');
+              err.streamEvents = events;
+              throw err;
+            }
+          }
+        }
+        if (done) {
+          break;
+        }
+      }
+      buffer += decoder.decode();
+      const trimmed = buffer.trim();
+      if (trimmed) {
+        try {
+          const event = JSON.parse(trimmed);
+          notify(event);
+          if (event.type === 'result') {
+            finalResult = event.result;
+          } else if (event.type === 'error') {
+            const err = new Error(event.error || 'Erreur de streaming.');
+            err.streamEvents = events;
+            throw err;
+          }
+        } catch (_) {
+          // Ignore trailing parse errors
+        }
+      }
+    } finally {
+      reader.releaseLock();
+    }
+
+    if (!finalResult && events.length > 0) {
+      const lastEvent = events[events.length - 1];
+      if (lastEvent.type === 'result') {
+        finalResult = lastEvent.result;
+      }
+    }
+
+    return { result: finalResult, events };
+  },
+  getSystemPrompt: (provider) => {
+    const suffix = provider ? ('?provider=' + encodeURIComponent(provider)) : '';
+    return jget('/api/system_prompt' + suffix);
+  },
+  setSystemPrompt: (content, provider) => {
+    const suffix = provider ? ('?provider=' + encodeURIComponent(provider)) : '';
+    return jpost('/api/system_prompt' + suffix, { content: content });
+  },
+  probeOllama: (server) => jget('/api/ollama/probe?server=' + encodeURIComponent(server || '')),
+  probeStt: (server, health) => jget('/api/stt/probe?server=' + encodeURIComponent(server || '') + (health ? '&health=' + encodeURIComponent(health) : '')),
   // TTS Language
   getTtsLanguages: () => jget('/api/tts/languages'),
   setTtsLanguage: (lang) => jpost('/api/tts/set_language', { language: lang }),

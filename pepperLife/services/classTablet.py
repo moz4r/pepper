@@ -14,7 +14,8 @@ class classTablet(object):
     """
     def __init__(self, session=None, logger=None, port=8088,
                  version_text="dev", version_file=None, version_provider=None, mic_toggle_callback=None, listener=None, speaker=None, vision_service=None,
-                 start_chat_callback=None, stop_chat_callback=None, get_chat_status_callback=None, get_detailed_chat_status_callback=None, anim=None, config_changed_callback=None):
+                 start_chat_callback=None, stop_chat_callback=None, get_chat_status_callback=None, get_detailed_chat_status_callback=None, anim=None, config_changed_callback=None,
+                 chat_send_callback=None):
         self.session = session
         self._log = logger or (lambda msg, **k: print(msg))
         self.port = int(port)
@@ -40,6 +41,7 @@ class classTablet(object):
         self.web_server.stop_chat_callback = stop_chat_callback
         self.web_server.get_chat_status_callback = get_chat_status_callback
         self.web_server.get_detailed_chat_status_callback = get_detailed_chat_status_callback
+        self.web_server.chat_send_callback = chat_send_callback
         self.web_server.config_changed_callback = config_changed_callback
 
         self.tablet = None

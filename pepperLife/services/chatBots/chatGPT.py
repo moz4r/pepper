@@ -7,7 +7,7 @@
 # - Logs détaillés: texte, usage, cached_tokens
 
 from __future__ import annotations
-from typing import List, Tuple, Dict, Any, Optional
+from typing import List, Tuple, Dict, Any, Optional, Callable
 from openai import OpenAI
 import os
 import json
@@ -92,7 +92,7 @@ class chatGPT(object):
     def get_base_prompt(config=None, logger=None):
         """
         Construit le prompt de base en combinant le custom_prompt de config.json
-        et le contenu de system_prompt.txt.
+        et le contenu de system_prompt_GPT.txt (fallback system_prompt.txt).
         """
         log = logger or (lambda msg, **kwargs: print(msg))
         prompts = []
@@ -104,15 +104,19 @@ class chatGPT(object):
                 prompts.append(custom_prompt.strip())
 
         # 2. Charger le prompt système depuis le fichier
-        prompt_path = os.path.abspath(os.path.join(os.path.dirname(__file__), "..", "..", "prompts", "system_prompt.txt"))
-        if os.path.exists(prompt_path):
-            try:
-                with open(prompt_path, "r", encoding='utf-8-sig') as f:
-                    text = f.read().strip()
-                    if text:
-                        prompts.append(text)
-            except Exception as e:
-                log("Lecture de system_prompt.txt échouée: %s" % e, level='warning')
+        prompt_dir = os.path.abspath(os.path.join(os.path.dirname(__file__), "..", "..", "prompts"))
+        prompt_candidates = ["system_prompt_GPT.txt", "system_prompt.txt"]
+        for filename in prompt_candidates:
+            prompt_path = os.path.join(prompt_dir, filename)
+            if os.path.exists(prompt_path):
+                try:
+                    with open(prompt_path, "r", encoding='utf-8-sig') as f:
+                        text = f.read().strip()
+                        if text:
+                            prompts.append(text)
+                            break
+                except Exception as e:
+                    log("Lecture de %s échouée: %s" % (filename, e), level='warning')
 
         # 3. Combiner ou retourner un défaut
         if prompts:
@@ -127,6 +131,78 @@ class chatGPT(object):
                 raise RuntimeError("OPENAI_API_KEY manquant (config.openai.api_key)")
             self._client = OpenAI(api_key=api_key)
         return self._client
+
+    def _notify_stream(self, observer: Optional[Callable[[Dict[str, Any]], None]], payload: Dict[str, Any]):
+        if not callable(observer):
+            return
+        try:
+            observer(payload)
+        except Exception as e:
+            self.log(f"[GPT_STREAM] Observer error: {e}", level='warning')
+
+    def _log_usage(self, usage):
+        input_tokens = cached = output_tokens = None
+        try:
+            input_tokens = getattr(usage, "input_tokens", None)
+            output_tokens = getattr(usage, "output_tokens", None)
+            details = getattr(usage, "input_tokens_details", None)
+            if details:
+                cached = getattr(details, "cached_tokens", None)
+        except Exception:
+            pass
+        self.log(f"USAGE: input={input_tokens} cached={cached} output={output_tokens}", level='info')
+
+    def _chat_stream(self, req: Dict[str, Any], on_chunk: Optional[Callable[[Dict[str, Any]], None]] = None):
+        text_parts: List[str] = []
+        events: List[Dict[str, Any]] = []
+        final_response = None
+        stream_error: Optional[str] = None
+
+        try:
+            with self.client().responses.stream(**req) as stream:
+                for event in stream:
+                    event_type = getattr(event, "type", "")
+                    if event_type == "response.output_text.delta":
+                        delta = getattr(event, "delta", "") or ""
+                        if delta:
+                            text_parts.append(delta)
+                            event_payload = {'type': event_type, 'delta': delta}
+                            events.append(event_payload)
+                            self._notify_stream(on_chunk, {'type': 'chunk', 'delta': delta})
+                    elif event_type == "response.error":
+                        error_obj = getattr(event, "error", None)
+                        err_msg = getattr(error_obj, "message", None) or str(error_obj or event)
+                        events.append({'type': event_type, 'error': err_msg})
+                        self._notify_stream(on_chunk, {'type': 'error', 'error': err_msg})
+                        stream_error = err_msg
+                        raise RuntimeError(err_msg)
+                    elif event_type == "response.completed":
+                        final_response = getattr(event, "response", None)
+                        events.append({'type': event_type})
+                    else:
+                        events.append({'type': event_type})
+                if final_response is None:
+                    final_response = stream.get_final_response()
+        except Exception as e:
+            stream_error = stream_error or str(e)
+            raise
+        finally:
+            if stream_error is None:
+                self._notify_stream(on_chunk, {'type': 'status', 'message': 'Stream terminé.'})
+
+        text = "".join(text_parts).strip()
+        if not final_response:
+            final_response = self.client().responses.create(**req)
+
+        if not text:
+            text = (getattr(final_response, "output_text", "") or "").strip()
+
+        self.log(f"CHAT TEXT (stream): {text}", level='debug')
+        usage = getattr(final_response, "usage", None)
+        self._log_usage(usage)
+
+        raw_payload = {'response': final_response, 'events': events}
+        return text, raw_payload
 
     # ---------- Construction des messages ----------
     def _build_messages_without_system(self, user_text: str, hist: List[Tuple[str, str]]) -> List[Dict[str, str]]:
@@ -148,7 +224,9 @@ class chatGPT(object):
         *,
         model: Optional[str] = None,
         temperature: Optional[float] = None,
-        max_output_tokens: Optional[int] = None
+        max_output_tokens: Optional[int] = None,
+        on_chunk: Optional[Callable[[Dict[str, Any]], None]] = None,
+        stream: Optional[bool] = None
     ) -> Tuple[str, Any]:
         """
         Renvoie une réponse courte et l'objet réponse brut de l'API.
@@ -189,6 +267,19 @@ class chatGPT(object):
         reasoning_effort = oai.get("reasoning_effort")
         if caps["supports_reasoning"] and reasoning_effort and reasoning_effort.lower() != 'none':
             req["reasoning"] = {"effort": reasoning_effort}
+        stream_mode = stream if stream is not None else callable(on_chunk)
+
+        if stream_mode:
+            try:
+                text, raw_payload = self._chat_stream(req, on_chunk=on_chunk)
+            except Exception as e:
+                self.log("Responses API streaming error: %s" % e, level='error')
+                return "Désolé, une erreur est survenue avec le service de chat.", {"error": str(e)}
+
+            if not text:
+                text = "%%Stand/BodyTalk/Listening/Listening%% Je t’écoute."
+            return text.replace("\n", " ").strip(), raw_payload
+
         # --- Appel + retry si refus de 'temperature' ---
         resp = None
         try:
@@ -206,21 +297,7 @@ class chatGPT(object):
         # Texte retourné
         text = (getattr(resp, "output_text", "") or "").strip()
         self.log(f"CHAT TEXT: {text}", level='debug')
-
-        # Usage + cache (si dispo)
-        u = getattr(resp, "usage", None)
-        cached = None
-        input_tokens = None
-        output_tokens = None
-        try:
-            input_tokens = getattr(u, "input_tokens", None)
-            output_tokens = getattr(u, "output_tokens", None)
-            details = getattr(u, "input_tokens_details", None)
-            if details:
-                cached = getattr(details, "cached_tokens", None)
-        except Exception:
-            pass
-        self.log(f"USAGE: input={input_tokens} cached={cached} output={output_tokens}", level='info')
+        self._log_usage(getattr(resp, "usage", None))
 
         # Fallback de sécurité pour ne pas rester muet
         if not text:

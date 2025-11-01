@@ -12,6 +12,7 @@ Ce script a un double rôle :
 import qi
 import subprocess
 import os
+import stat
 import logging
 import collections
 import threading
@@ -80,8 +81,20 @@ class LauncherService:
                 self.logger.info("Utilisation du lanceur par défaut pour NAOqi 2.9+.")
         except Exception as e:
             self.logger.error("Impossible de récupérer la version de NAOqi: {}. Utilisation du lanceur par défaut.".format(e))
-        
+
         return default_runner_path
+
+    def _ensure_runner_executable(self, path):
+        if not path or not os.path.exists(path):
+            return
+        try:
+            st = os.stat(path)
+            if not (st.st_mode & stat.S_IXUSR):
+                new_mode = st.st_mode | stat.S_IXUSR | stat.S_IXGRP | stat.S_IXOTH
+                os.chmod(path, new_mode)
+                self.logger.info("Droits d'exécution ajoutés à %s", path)
+        except Exception as e:
+            self.logger.warning("Impossible d'ajuster les droits de %s: %s", path, e)
 
     def launch(self):
         if self.is_running():
@@ -97,6 +110,8 @@ class LauncherService:
             self.logger.error(err_msg)
             self.logs.append("ERREUR: {}".format(err_msg))
             return False
+
+        self._ensure_runner_executable(runner_path)
 
         command = [runner_path, "-u", script_path]
         try:
@@ -153,6 +168,8 @@ class LauncherService:
             self.logger.error("  -> Le lanceur Python 3 est introuvable. Impossible de démarrer le service.")
             self.service_status = "FAILED"
             return False
+
+        self._ensure_runner_executable(runner_path)
 
         service_script_path = '/home/nao/.local/share/PackageManager/apps/pepperlife/bin/pepper_life_service.py'
         command = [runner_path, service_script_path]

@@ -4,6 +4,7 @@
 import os
 import re
 import threading
+import time
 
 class Speaker(object):
     def __init__(self, session, logger, config=None):
@@ -78,6 +79,36 @@ class Speaker(object):
                 self.logger("Impossible de se connecter à PepperLifeService depuis Speaker: {}".format(e), level='error')
                 raise
 
+    def _ensure_channel_ready(self, retries=3, cooldown=0.1):
+        if not self.pls:
+            return
+        try:
+            try:
+                self.pls.stopAll()
+            except Exception as err:
+                self.logger("[TTS] stopAll() initial a échoué: {}".format(err), level='warning')
+            time.sleep(max(0.01, cooldown))
+
+            for _ in range(max(1, retries)):
+                state = self.pls.get_state()
+                speaking = bool(state.get('speaking'))
+                animating = bool(state.get('animating'))
+                thinking = bool(state.get('thinking'))
+                if not (speaking or animating or thinking):
+                    return
+                self.logger(
+                    "[TTS] Canal occupé (speaking=%s animating=%s thinking=%s) → stopAll()"
+                    % (speaking, animating, thinking),
+                    level='debug'
+                )
+                try:
+                    self.pls.stopAll()
+                except Exception as err:
+                    self.logger("[TTS] stopAll() a échoué: {}".format(err), level='warning')
+                time.sleep(max(0.02, cooldown))
+        except Exception as err:
+            self.logger("[TTS] Impossible de vérifier l'état du canal: {}".format(err), level='warning')
+
     def say_quick(self, text, stop_event=None):
         """
         Prend un texte brut, le fait résoudre par le service, puis demande au service de le dire.
@@ -115,7 +146,18 @@ class Speaker(object):
 
                 resolved_text = self._apply_tts_replacements(resolved_text)
                 self.logger(u"[TTS] Texte original: '{}' -> Résolu: '{}'".format(text, resolved_text), level='info')
-                self.pls.sayAnimated(resolved_text, False, True)
+                self._ensure_channel_ready()
+                try:
+                    self.pls.sayAnimated(resolved_text, False, True)
+                except RuntimeError as err:
+                    message = str(err)
+                    if "Future has already been set" in message or "Future already set" in message:
+                        self.logger("[TTS] Future déjà définie, tentative de récupération...", level='warning')
+                        self._ensure_channel_ready(retries=3, cooldown=0.2)
+                        time.sleep(0.05)
+                        self.pls.sayAnimated(resolved_text, False, True)
+                    else:
+                        raise
 
         except Exception as e:
             self.logger("Erreur dans say_quick: {}".format(e), level='error')

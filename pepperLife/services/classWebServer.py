@@ -48,6 +48,12 @@ import subprocess
 import collections
 
 try:
+    from urllib.request import Request, urlopen
+    from urllib.error import URLError, HTTPError
+except ImportError:
+    from urllib2 import Request, urlopen, URLError, HTTPError
+
+try:
     # Python 3
     from urllib.parse import urlparse, parse_qs
 except Exception:
@@ -76,6 +82,7 @@ except ImportError:
     from SocketServer import TCPServer, ThreadingMixIn
 
 from .classSystem import version as SysVersion
+from .chatBots.ollama import call_ollama_api, list_models, normalize_base_url
 
 try:
     from .classAudioUtils import avgabs
@@ -116,6 +123,7 @@ class WebServer(object):
         self.stop_chat_callback = None
         self.get_chat_status_callback = None
         self.get_detailed_chat_status_callback = None
+        self.chat_send_callback = None
         self.config_changed_callback = None
         self._behavior_nature_cache = {}
         self._last_installed_behaviors = []
@@ -315,6 +323,8 @@ class WebServer(object):
                 # chat
                 if path == '/api/chat/status': self._get_chat_status(); return
                 if path == '/api/chat/detailed_status': self._get_detailed_chat_status(); return
+                if path == '/api/ollama/probe': self._ollama_probe(parsed); return
+                if path == '/api/stt/probe': self._stt_probe(parsed); return
 
                 # misc
                 if path == '/api/heartbeat':
@@ -402,7 +412,7 @@ class WebServer(object):
                     except Exception as e:
                         self._send_503('tail logs error: %s' % e)
                     return
-                if path == '/api/system_prompt': self._get_system_prompt(); return
+                if path == '/api/system_prompt': self._get_system_prompt(parsed); return
                 if path == '/api/tts/languages': self._get_tts_languages(); return
                 if path == '/api/camera/status': self._camera_status(); return
 
@@ -483,7 +493,8 @@ class WebServer(object):
                 if path == '/api/tts/set_language': self._set_tts_language(payload); return
                 if path == '/api/chat/start': self._chat_start(payload); return
                 if path == '/api/chat/stop': self._chat_stop(); return
-                if path == '/api/system_prompt': self._set_system_prompt(payload); return
+                if path == '/api/chat/send': self._chat_send(payload); return
+                if path == '/api/system_prompt': self._set_system_prompt(payload, parsed); return
                 self._send_503('Unknown POST %s' % path)
 
             def _get_mic_status(self):
@@ -519,6 +530,78 @@ class WebServer(object):
                         self._send_503('get_chat_status failed: %s' % e)
                 else:
                     self._send_503('Callback get_chat_status indisponible')
+
+            def _ollama_probe(self, parsed):
+                qs = parse_qs(parsed.query or '')
+                server = (qs.get('server') or [''])[0].strip()
+                if not server:
+                    self._json(400, {'error': 'Paramètre server manquant'}); return
+                normalized = normalize_base_url(server)
+                if not normalized:
+                    self._json(400, {'error': 'URL de serveur invalide.'}); return
+                version_error = None
+                try:
+                    models, _ = list_models(normalized)
+                    version = None
+                    try:
+                        version = call_ollama_api(normalized, "/api/version").get('version')
+                    except Exception as e:
+                        version_error = str(e)
+                    resp = {
+                        'ok': True,
+                        'normalized_url': normalized,
+                        'models': models
+                    }
+                    resp['model_names'] = [m.get('name') or m.get('alias') for m in models if isinstance(m, dict)]
+                    if version:
+                        resp['version'] = version
+                    if version_error and not version:
+                        resp['version_error'] = version_error
+                    self._json(200, resp)
+                except Exception as e:
+                    self._json(502, {'error': str(e), 'normalized_url': normalized})
+
+            def _stt_probe(self, parsed):
+                qs = parse_qs(parsed.query or '')
+                server = (qs.get('server') or [''])[0].strip()
+                health = (qs.get('health') or ['/health'])[0] or '/health'
+                timeout = 6
+                if not server:
+                    self._json(400, {'error': 'Paramètre server manquant'}); return
+                normalized = normalize_base_url(server)
+                if not normalized:
+                    self._json(400, {'error': 'URL de serveur invalide.'}); return
+                if not health.startswith('/'):
+                    health = '/' + health
+                url = normalized + health
+                req = Request(url, headers={'Accept': 'application/json, text/plain'})
+                try:
+                    with urlopen(req, timeout=timeout) as resp:
+                        raw = resp.read()
+                        content_type = resp.headers.get('Content-Type', '')
+                        status = getattr(resp, 'status', 200)
+                except HTTPError as e:
+                    body = e.read().decode('utf-8', 'ignore')
+                    self._json(e.code, {'error': body or str(e), 'normalized_url': normalized})
+                    return
+                except URLError as e:
+                    self._json(502, {'error': str(getattr(e, 'reason', e)), 'normalized_url': normalized})
+                    return
+
+                try:
+                    if 'application/json' in (content_type or '').lower():
+                        payload = json.loads(raw.decode('utf-8', 'ignore'))
+                    else:
+                        payload = {'text': raw.decode('utf-8', 'ignore')}
+                except Exception:
+                    payload = {'text': raw.decode('utf-8', 'ignore')}
+
+                self._json(200, {
+                    'ok': True,
+                    'normalized_url': normalized,
+                    'health': payload,
+                    'status': status
+                })
 
             # ----- Camera -----
             def _camera_status(self):
@@ -634,30 +717,48 @@ class WebServer(object):
                 self._json(200, {'logs': logs_html})
 
             # ----- System prompt -----
-            def _get_system_prompt(self):
+            def _get_system_prompt(self, parsed=None):
                 try:
-                    prompt_path = os.path.abspath(os.path.join(os.path.dirname(__file__), '..', 'prompts', 'system_prompt.txt'))
+                    qs = parse_qs(parsed.query or '') if parsed else {}
+                    provider = (qs.get('provider') or ['gpt'])[0].strip().lower() or 'gpt'
+                    prompt_dir = os.path.abspath(os.path.join(os.path.dirname(__file__), '..', 'prompts'))
+                    if provider == 'ollama':
+                        candidates = ['system_prompt_OLLAMA.txt', 'system_prompt.txt']
+                    else:
+                        candidates = ['system_prompt_GPT.txt', 'system_prompt.txt']
+                        provider = 'gpt'
                     content = ''
-                    if os.path.isfile(prompt_path):
-                        with open(prompt_path, 'r', encoding='utf-8') as f:
-                            content = f.read()
-                    self._json(200, {'content': content})
+                    for filename in candidates:
+                        prompt_path = os.path.join(prompt_dir, filename)
+                        if os.path.isfile(prompt_path):
+                            with open(prompt_path, 'r', encoding='utf-8') as f:
+                                content = f.read()
+                            break
+                    self._json(200, {'content': content, 'provider': provider})
                 except Exception as e:
                     self._send_503('Failed to read system prompt: %s' % e)
 
-            def _set_system_prompt(self, payload):
+            def _set_system_prompt(self, payload, parsed=None):
                 try:
+                    qs = parse_qs(parsed.query or '') if parsed else {}
+                    provider = (qs.get('provider') or ['gpt'])[0].strip().lower() or 'gpt'
                     content_value = payload.get('content')
                     text_to_write = None
                     if isinstance(content_value, str): text_to_write = content_value
                     elif isinstance(content_value, dict): text_to_write = content_value.get('content')
                     if not isinstance(text_to_write, str):
                         self._json(400, {'error': 'Invalid content format'}); return
-                    prompt_path = os.path.abspath(os.path.join(os.path.dirname(__file__), '..', 'prompts', 'system_prompt.txt'))
-                    os.makedirs(os.path.dirname(prompt_path), exist_ok=True)
+                    prompt_dir = os.path.abspath(os.path.join(os.path.dirname(__file__), '..', 'prompts'))
+                    os.makedirs(prompt_dir, exist_ok=True)
+                    if provider == 'ollama':
+                        filename = 'system_prompt_OLLAMA.txt'
+                    else:
+                        filename = 'system_prompt_GPT.txt'
+                        provider = 'gpt'
+                    prompt_path = os.path.join(prompt_dir, filename)
                     with open(prompt_path, 'w', encoding='utf-8') as f:
                         f.write(text_to_write)
-                    self._json(200, {'success': True})
+                    self._json(200, {'success': True, 'provider': provider})
                 except Exception as e:
                     self._send_503('Failed to write system prompt: %s' % e)
 
@@ -1162,6 +1263,100 @@ class WebServer(object):
                         self._send_503('stop_chat callback indisponible')
                 except Exception as e:
                     self._send_503('chat/stop error: %s' % e)
+
+            def _chat_send(self, payload):
+                cb = getattr(self.server.parent, 'chat_send_callback', None)
+                if not cb:
+                    self._send_503('chat_send callback indisponible')
+                    return
+
+                data = payload if isinstance(payload, dict) else {}
+                streaming_requested = False
+                try:
+                    mode = (data.get('mode') or '').strip().lower()
+                    debug_stream = bool(data.get('debug_stream'))
+                    if not debug_stream:
+                        streaming_requested = False
+                    elif mode == 'ollama':
+                        streaming_requested = data.get('stream') is not False
+                    elif mode == 'gpt':
+                        streaming_requested = bool(data.get('stream'))
+                    else:
+                        streaming_requested = False
+                except Exception:
+                    streaming_requested = False
+
+                if streaming_requested:
+                    stream_events = []
+                    client_closed = False
+
+                    def emit_event(event):
+                        nonlocal client_closed
+                        if client_closed:
+                            return
+                        try:
+                            line = json.dumps(event, ensure_ascii=False).encode('utf-8') + b'\n'
+                            self.wfile.write(line)
+                            self.wfile.flush()
+                        except BrokenPipeError:
+                            client_closed = True
+                            parent._logger("[WebServer] Client disconnected during chat stream.", level='warning')
+                        except Exception as e:
+                            client_closed = True
+                            parent._logger(f"[WebServer] Streaming write error: {e}", level='error')
+
+                    self.send_response(200)
+                    self._apply_cors()
+                    self.send_header('Content-Type', 'application/x-ndjson; charset=utf-8')
+                    self.send_header('Cache-Control', 'no-store')
+                    self.send_header('X-Accel-Buffering', 'no')
+                    self.end_headers()
+
+                    emit_event({'type': 'status', 'message': 'Streaming démarré.'})
+
+                    def stream_observer(event):
+                        if event is None:
+                            return
+                        if not isinstance(event, dict):
+                            event_dict = {'type': 'chunk', 'delta': str(event)}
+                        else:
+                            event_dict = dict(event)
+                            event_dict.setdefault('type', 'chunk')
+                        stream_events.append(event_dict)
+                        emit_event(event_dict)
+
+                    cb_payload = dict(data)
+                    cb_payload.pop('debug_stream', None)
+                    try:
+                        result = cb(cb_payload, stream_observer=stream_observer)
+                    except TypeError as e:
+                        parent._logger(f"[WebServer] chat_send callback streaming fallback: {e}", level='warning')
+                        result = cb(cb_payload)
+                    except Exception as e:
+                        parent._logger('chat/send streaming error: %s' % e, level='error')
+                        emit_event({'type': 'error', 'error': str(e)})
+                        return
+
+                    if not isinstance(result, dict):
+                        emit_event({'type': 'error', 'error': 'chat/send invalid response'})
+                        return
+
+                    final_result = dict(result)
+                    final_result['stream_events'] = stream_events
+                    emit_event({'type': 'result', 'result': final_result})
+                    return
+
+                cb_payload = dict(data)
+                cb_payload.pop('debug_stream', None)
+                try:
+                    result = cb(cb_payload)
+                except Exception as e:
+                    self._send_503('chat/send error: %s' % e)
+                    return
+                if not isinstance(result, dict):
+                    self._send_503('chat/send invalid response')
+                    return
+                self._json(200, result)
 
             # ----- Local utils -----
             def _ip_addresses(self):

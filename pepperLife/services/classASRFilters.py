@@ -19,6 +19,16 @@ def is_noise_utterance(txt, blacklist_strict):
     if len(n) <= 3: return True
     if " " not in n and len(n) <= 5: return True
     if n.endswith(".") and len(n) <= 8: return True
+    tokens = n.split()
+    if tokens:
+        streak = 1
+        for prev, current in zip(tokens, tokens[1:]):
+            if current == prev:
+                streak += 1
+                if streak > 5:
+                    return True
+            else:
+                streak = 1
     return False
 
 _NOISE_RECENCY = {"last_norm": "", "t": 0.0}
