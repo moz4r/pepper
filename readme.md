@@ -1,6 +1,7 @@
 # PepperLife - NaoQI / Python3 / GPT
 
-<img width="1160" height="761" alt="image" src="https://github.com/user-attachments/assets/f0549f60-1085-4d97-abdf-b462770610f9" />
+<img width="2841" height="1587" alt="image" src="https://github.com/user-attachments/assets/84f8d22a-2517-4639-90d3-209ba36c44ee" />
+
 
 
 **PepperLife** est un projet open-source qui vise à doter le robot **Pepper** de capacités d'interaction avancées en le connectant à des modèles de langage (LLM) de pointe comme GPT-4o, GPT-4o-mini ou GPT-5 d'OpenAI, selon votre configuration. Il transforme Pepper en un assistant plus intelligent, capable de comprendre, de voir, de parler et d'interagir de manière fluide et naturelle.
