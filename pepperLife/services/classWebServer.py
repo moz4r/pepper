@@ -392,6 +392,7 @@ class WebServer(object):
                 if path == '/api/posture/state': self._get_posture_state(); return
                 if path == '/api/hardware/info': self._get_hardware_info(); return
                 if path == '/api/hardware/details': self._get_hardware_details(); return
+                if path == '/api/motion/joints': self._get_motion_joints(); return
                 if path == '/api/wifi/scan': self._wifi_scan(); return
                 if path == '/api/wifi/status': self._wifi_status(); return
                 if path == '/api/apps/list': self._apps_list(); return
@@ -979,6 +980,36 @@ class WebServer(object):
                     self._json(200, {'joints': joints_data, 'devices': devices_data, 'config': config_data, 'head_temp': head_temp_data})
                 except Exception as e:
                     self._send_503('hardware/details error: %s' % e)
+
+            def _get_motion_joints(self):
+                """GET /api/motion/joints - Récupère les angles des articulations (rad)."""
+                try:
+                    motion = parent.svc('ALMotion')
+                    if not motion:
+                        self._send_503('ALMotion indisponible')
+                        return
+                    try:
+                        joint_names = motion.getBodyNames('Body')
+                    except Exception as e:
+                        self._send_503('motion/joints error: %s' % e)
+                        return
+                    if not joint_names:
+                        self._json(200, {'joints': {}, 'timestamp': time.time()})
+                        return
+                    try:
+                        angles = motion.getAngles(joint_names, True)
+                    except Exception as e:
+                        self._send_503('motion/joints error: %s' % e)
+                        return
+                    joints_payload = {}
+                    for idx, name in enumerate(joint_names):
+                        angle = None
+                        if idx < len(angles):
+                            angle = angles[idx]
+                        joints_payload[name] = {'angle': angle}
+                    self._json(200, {'joints': joints_payload, 'timestamp': time.time()})
+                except Exception as e:
+                    self._send_503('motion/joints error: %s' % e)
 
             def _wifi_scan(self):
                 """GET /api/wifi/scan - Scanne et retourne les réseaux WiFi disponibles."""

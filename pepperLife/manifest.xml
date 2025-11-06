@@ -1,5 +1,5 @@
 <?xml version="1.0" encoding="UTF-8"?>
-<package uuid="pepperlife" version="0.8.2">
+<package uuid="pepperlife" version="1.0.1">
     <names>
         <name lang="en_US">PepperLife GPT</name>
         <name lang="fr_FR">PepperLife GPT</name>
@@ -15,7 +15,7 @@
         <file path="python" />
     </executableFiles>
     <requirements>
-        <naoqiRequirement maxVersion="2.9.9" minVersion="2.9"/>
+        <naoqiRequirement maxVersion="2.9" minVersion="2.9"/>
         <robotRequirement model="JULIETTE"/>
     </requirements>
 </package>

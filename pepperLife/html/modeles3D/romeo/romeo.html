@@ -1,0 +1,149 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="utf-8" />
+  <title>Romeo Web Walk Demo</title>
+  <style>
+    html, body {
+      margin: 0;
+      height: 100%;
+      overflow: hidden;
+      background: #0d0f1a;
+      color: #fff;
+      font-family: Arial, sans-serif;
+    }
+    #info {
+      position: absolute;
+      top: 12px;
+      left: 12px;
+      background: rgba(0, 0, 0, 0.55);
+      padding: 10px 14px;
+      border-radius: 8px;
+      font-size: 14px;
+      line-height: 1.4;
+      max-width: 320px;
+    }
+    canvas {
+      display: block;
+    }
+  </style>
+</head>
+<body>
+  <div id="info">
+    <strong>Romeo Web Walk</strong><br />
+    Mouse drag&nbsp;= orbit, scroll&nbsp;= zoom.<br />
+    The gait motion is synthesised (sinusoidal), adjust amplitudes in code if needed.
+  </div>
+  <script type="importmap">
+    {
+      "imports": {
+        "three": "../../vendor/three/build/three.module.js",
+        "three/examples/jsm/controls/OrbitControls.js": "../../vendor/three/examples/jsm/controls/OrbitControls.js",
+        "three/examples/jsm/loaders/GLTFLoader.js": "../../vendor/three/examples/jsm/loaders/GLTFLoader.js"
+      }
+    }
+  </script>
+  <script type="module">
+    import * as THREE from 'three';
+    import { OrbitControls } from 'three/examples/jsm/controls/OrbitControls.js';
+    import { GLTFLoader } from 'three/examples/jsm/loaders/GLTFLoader.js';
+
+    const renderer = new THREE.WebGLRenderer({ antialias: true });
+    renderer.setPixelRatio(window.devicePixelRatio);
+    renderer.setSize(window.innerWidth, window.innerHeight);
+    renderer.outputEncoding = THREE.sRGBEncoding;
+    document.body.appendChild(renderer.domElement);
+
+    const scene = new THREE.Scene();
+    scene.background = new THREE.Color(0x10121f);
+
+    const camera = new THREE.PerspectiveCamera(45, window.innerWidth / window.innerHeight, 0.1, 100);
+    camera.position.set(1.4, 1.3, 2.4);
+
+    const controls = new OrbitControls(camera, renderer.domElement);
+    controls.target.set(0.2, 0.95, 0);
+    controls.update();
+
+    const hemiLight = new THREE.HemisphereLight(0xffffff, 0x20263a, 0.9);
+    scene.add(hemiLight);
+
+    const dirLight = new THREE.DirectionalLight(0xffffff, 0.9);
+    dirLight.position.set(2, 3, 1);
+    dirLight.castShadow = true;
+    scene.add(dirLight);
+
+    const ground = new THREE.Mesh(
+      new THREE.PlaneGeometry(10, 10),
+      new THREE.MeshStandardMaterial({ color: 0x1d2135, roughness: 0.9, metalness: 0.0 })
+    );
+    ground.rotateX(-Math.PI / 2);
+    ground.position.y = 0.0;
+    scene.add(ground);
+
+    const loader = new GLTFLoader();
+    const jointConfigs = [
+      { name: 'LHipPitch_link', axis: new THREE.Vector3(1, 0, 0), amplitude: 0.35, phase: 0.0, offset: 0.0 },
+      { name: 'RHipPitch_link', axis: new THREE.Vector3(1, 0, 0), amplitude: 0.35, phase: Math.PI, offset: 0.0 },
+      { name: 'LKneePitch_link', axis: new THREE.Vector3(1, 0, 0), amplitude: 0.55, phase: 0.0, offset: 0.3, positiveOnly: true },
+      { name: 'RKneePitch_link', axis: new THREE.Vector3(1, 0, 0), amplitude: 0.55, phase: Math.PI, offset: 0.3, positiveOnly: true },
+      { name: 'LShoulderPitch_link', axis: new THREE.Vector3(1, 0, 0), amplitude: 0.25, phase: Math.PI, offset: 0.0 },
+      { name: 'RShoulderPitch_link', axis: new THREE.Vector3(1, 0, 0), amplitude: 0.25, phase: 0.0, offset: 0.0 }
+    ];
+
+    const jointState = new Map();
+    const clock = new THREE.Clock();
+
+    loader.load(
+      'romeo.glb',
+      (gltf) => {
+        scene.add(gltf.scene);
+        gltf.scene.traverse((obj) => {
+          jointConfigs.forEach((config) => {
+            if (!jointState.has(config.name) && obj.name === config.name) {
+              jointState.set(config.name, {
+                object: obj,
+                initial: obj.quaternion.clone(),
+                axis: config.axis.clone().normalize(),
+                amplitude: config.amplitude,
+                phase: config.phase,
+                offset: config.offset || 0.0,
+                positiveOnly: Boolean(config.positiveOnly)
+              });
+            }
+          });
+        });
+        console.log('Romeo loaded. Joint targets found:', Array.from(jointState.keys()));
+      },
+      undefined,
+      (error) => {
+        console.error('Failed to load romeo.glb', error);
+      }
+    );
+
+    function updateJoints(time) {
+      jointState.forEach((state, name) => {
+        const raw = Math.sin(time * 1.6 + state.phase) * state.amplitude + state.offset;
+        const angle = state.positiveOnly ? Math.max(0, raw) : raw;
+        state.object.quaternion.copy(state.initial);
+        const delta = new THREE.Quaternion().setFromAxisAngle(state.axis, angle);
+        state.object.quaternion.multiply(delta);
+      });
+    }
+
+    function animate() {
+      requestAnimationFrame(animate);
+      const elapsed = clock.getElapsedTime();
+      updateJoints(elapsed);
+      renderer.render(scene, camera);
+    }
+
+    animate();
+
+    window.addEventListener('resize', () => {
+      camera.aspect = window.innerWidth / window.innerHeight;
+      camera.updateProjectionMatrix();
+      renderer.setSize(window.innerWidth, window.innerHeight);
+    });
+  </script>
+</body>
+</html>

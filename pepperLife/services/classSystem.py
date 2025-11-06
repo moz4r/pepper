@@ -2,6 +2,7 @@
 # classSystem.py — Couleurs pour la console et gestion de version
 import os
 import io
+import sys
 
 import logging
 

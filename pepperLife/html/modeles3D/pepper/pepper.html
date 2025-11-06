@@ -1,0 +1,363 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="utf-8" />
+  <title>Pepper Web Walk Demo</title>
+  <style>
+    html, body {
+      margin: 0;
+      height: 100%;
+      overflow: hidden;
+      background: #0b1524;
+      color: #ffffff;
+      font-family: Arial, sans-serif;
+    }
+    #info {
+      position: absolute;
+      top: 12px;
+      left: 12px;
+      max-width: 340px;
+      padding: 10px 16px;
+      border-radius: 8px;
+      background: rgba(0, 0, 0, 0.6);
+      font-size: 14px;
+      line-height: 1.4;
+    }
+    canvas {
+      display: block;
+    }
+  </style>
+</head>
+<body>
+  <div id="info">
+    <strong>Pepper Web Walk</strong><br />
+    Orbit with mouse drag, zoom with scroll.<br />
+    Motion is procedural (sinusoidal). Tweak joint amplitudes in the code.
+  </div>
+  <script type="importmap">
+    {
+      "imports": {
+        "three": "../../vendor/three/build/three.module.js",
+        "three/examples/jsm/controls/OrbitControls.js": "../../vendor/three/examples/jsm/controls/OrbitControls.js",
+        "three/examples/jsm/loaders/GLTFLoader.js": "../../vendor/three/examples/jsm/loaders/GLTFLoader.js"
+      }
+    }
+  </script>
+  <script type="module">
+    import * as THREE from 'three';
+    import { OrbitControls } from 'three/examples/jsm/controls/OrbitControls.js';
+    import { GLTFLoader } from 'three/examples/jsm/loaders/GLTFLoader.js';
+
+    const renderer = new THREE.WebGLRenderer({ antialias: true });
+    renderer.setPixelRatio(window.devicePixelRatio || 1);
+    renderer.setSize(window.innerWidth, window.innerHeight);
+    if ('outputColorSpace' in renderer) {
+      renderer.outputColorSpace = THREE.SRGBColorSpace;
+    } else if ('outputEncoding' in renderer) {
+      renderer.outputEncoding = THREE.sRGBEncoding;
+    }
+    document.body.appendChild(renderer.domElement);
+
+    const scene = new THREE.Scene();
+    scene.background = new THREE.Color(0x0f1b2d);
+
+    const camera = new THREE.PerspectiveCamera(45, window.innerWidth / window.innerHeight, 0.1, 100);
+    camera.position.set(1.8, 1.2, 2.5);
+
+    const controls = new OrbitControls(camera, renderer.domElement);
+    controls.target.set(0.0, 0.95, 0);
+    controls.update();
+
+    scene.add(new THREE.HemisphereLight(0xffffff, 0x1c2433, 0.85));
+
+    const dirLight = new THREE.DirectionalLight(0xffffff, 0.9);
+    dirLight.position.set(2.5, 3.0, 1.2);
+    scene.add(dirLight);
+
+    const ground = new THREE.Mesh(
+      new THREE.PlaneGeometry(12, 12),
+      new THREE.MeshStandardMaterial({ color: 0x1a2235, roughness: 0.92, metalness: 0.0 })
+    );
+    ground.rotation.x = -Math.PI / 2;
+    ground.position.y = -0.005;
+    scene.add(ground);
+
+    const loader = new GLTFLoader();
+    const jointConfigs = [
+      { name: 'LShoulderPitch_link', axis: new THREE.Vector3(1, 0, 0), amplitude: 0.45, phase: Math.PI, offset: 0.0 },
+      { name: 'RShoulderPitch_link', axis: new THREE.Vector3(1, 0, 0), amplitude: 0.45, phase: 0.0, offset: 0.0 },
+      { name: 'LShoulderRoll_link', axis: new THREE.Vector3(0, 0, 1), amplitude: 0.25, phase: Math.PI / 2, offset: 0.1 },
+      { name: 'RShoulderRoll_link', axis: new THREE.Vector3(0, 0, 1), amplitude: 0.25, phase: -Math.PI / 2, offset: -0.1 },
+      { name: 'HeadYaw_link', axis: new THREE.Vector3(0, 1, 0), amplitude: 0.25, phase: 0.0, offset: 0.0 },
+      { name: 'HeadPitch_link', axis: new THREE.Vector3(1, 0, 0), amplitude: 0.15, phase: Math.PI / 2, offset: 0.05 }
+    ];
+
+    const baseNodeNames = [
+      'AccelerometerBase',
+      'Battery',
+      'Bumper/Back',
+      'Bumper/FrontLeft',
+      'Bumper/FrontRight',
+      'DeadAngle/Left',
+      'DeadAngle/Right',
+      'GyrometerBaseX',
+      'GyrometerBaseY',
+      'GyrometerBaseZ',
+      'LaserSensor/Front',
+      'LaserSensor/Left',
+      'LaserSensor/Right',
+      'LaserSensor/Shovel',
+      'LaserSensor/VerticalLeft',
+      'LaserSensor/VerticalRight',
+      'PowerHatch',
+      'Sonar/Back',
+      'Sonar/Front',
+      'KneePitch',
+      'KneePitch_link_visual_0',
+      'Leg',
+      'WheelB_link',
+      'WheelFL_link',
+      'WheelFR_link'
+    ];
+
+    const jointState = new Map();
+    const clock = new THREE.Clock();
+
+    const hipControllers = {
+      kneePivot: null,
+      upperBody: null,
+      upperPivot: null
+    };
+
+    const baseCompensation = {
+      helper: null,
+      knee: null,
+      worldMatrix: new THREE.Matrix4(),
+      worldScale: new THREE.Vector3()
+    };
+
+    const scratchQuatA = new THREE.Quaternion();
+    const scratchQuatB = new THREE.Quaternion();
+    const pitchAxis = new THREE.Vector3(0, 1, 0);
+    const rollAxis = new THREE.Vector3(0, 0, 1);
+    const scratchAxisQuat = new THREE.Quaternion();
+    const scratchMatrix = new THREE.Matrix4();
+    const scratchScale = new THREE.Vector3();
+    const scratchVector = new THREE.Vector3();
+
+    function createController(node, axis) {
+      if (!node) return null;
+      return {
+        object: node,
+        initial: node.quaternion.clone(),
+        axis: axis.clone().normalize()
+      };
+    }
+
+    function applyController(ctrl, angle) {
+      if (!ctrl) return;
+      ctrl.object.quaternion.copy(ctrl.initial);
+      scratchAxisQuat.setFromAxisAngle(ctrl.axis, angle);
+      ctrl.object.quaternion.multiply(scratchAxisQuat);
+    }
+
+    loader.load(
+      'pepper.glb',
+      (gltf) => {
+        const modelRoot = new THREE.Group();
+        modelRoot.name = 'PepperRoot';
+        modelRoot.add(gltf.scene);
+        scene.add(modelRoot);
+
+        gltf.scene.rotation.set(-Math.PI / 2, 0, 0);
+        gltf.scene.updateMatrixWorld(true);
+
+        const bbox = new THREE.Box3().setFromObject(gltf.scene);
+        const center = bbox.getCenter(new THREE.Vector3());
+        const size = bbox.getSize(new THREE.Vector3());
+
+        gltf.scene.position.sub(center);
+        gltf.scene.position.y += size.y * 0.5;
+        modelRoot.rotation.y = -Math.PI / 2;
+        modelRoot.updateMatrixWorld(true);
+
+        const focusY = Math.max(size.y * 0.48, 0.8);
+        controls.target.set(0, focusY, 0);
+
+        const maxDim = Math.max(size.x, size.y, size.z, 1.0);
+        const halfMax = maxDim / 2;
+        const fov = camera.fov * (Math.PI / 180);
+        let cameraDistance = halfMax / Math.tan(fov / 2);
+        cameraDistance = cameraDistance * 1.05 + 0.15;
+        controls.minDistance = Math.max(maxDim * 0.4, 0.6);
+        controls.maxDistance = Math.max(maxDim * 3.0, controls.minDistance + 1.2);
+        const cameraHeight = focusY + Math.max(size.y * 0.18, 0.12);
+        camera.position.set(0, cameraHeight, cameraDistance);
+        controls.update();
+        camera.lookAt(controls.target);
+
+        gltf.scene.traverse((obj) => {
+          jointConfigs.forEach((cfg) => {
+            if (!jointState.has(cfg.name) && obj.name === cfg.name) {
+              jointState.set(cfg.name, {
+                object: obj,
+                initial: obj.quaternion.clone(),
+                axis: cfg.axis.clone().normalize(),
+                amplitude: cfg.amplitude,
+                phase: cfg.phase,
+                offset: cfg.offset || 0.0,
+                positiveOnly: Boolean(cfg.positiveOnly)
+              });
+            }
+          });
+        });
+
+        const findNode = (name) => gltf.scene.getObjectByName(name);
+        const kneeNode = findNode('KneePitch_link');
+        const upperBodyNode = findNode('PepperUpperBody');
+        if (upperBodyNode) {
+          const upperParent = upperBodyNode.parent;
+          const upperPivot = new THREE.Group();
+          upperPivot.name = 'PepperUpperBodyPivot';
+          const originalPosition = upperBodyNode.position.clone();
+          upperPivot.position.set(0, 0, 0);
+          upperParent.add(upperPivot);
+          upperPivot.add(upperBodyNode);
+          upperBodyNode.position.copy(originalPosition);
+          upperPivot.updateMatrixWorld(true);
+          upperBodyNode.updateMatrixWorld(true);
+          hipControllers.upperPivot = {
+            object: upperPivot,
+            initial: upperPivot.quaternion.clone()
+          };
+          hipControllers.upperBody = {
+            object: upperBodyNode,
+            initial: upperBodyNode.quaternion.clone()
+          };
+        }
+
+        const aboveKneeNode = findNode('PepperAboveKnee');
+        if (kneeNode && aboveKneeNode && hipControllers.upperPivot) {
+          const kneePivot = new THREE.Group();
+          kneePivot.name = 'PepperKneePivot';
+          const torsoNode = findNode('Torso_link') || aboveKneeNode.parent;
+
+          torsoNode.add(kneePivot);
+
+          const kneeWorldPos = new THREE.Vector3();
+          kneeNode.getWorldPosition(kneeWorldPos);
+          torsoNode.worldToLocal(kneeWorldPos);
+          kneePivot.position.copy(kneeWorldPos);
+
+          kneePivot.attach(aboveKneeNode);
+
+          kneePivot.updateMatrixWorld(true);
+          aboveKneeNode.updateMatrixWorld(true);
+
+          const upperPivotObj = hipControllers.upperPivot.object;
+          upperPivotObj.updateMatrixWorld(true);
+          hipControllers.upperPivot.initial = upperPivotObj.quaternion.clone();
+
+          hipControllers.kneePivot = createController(kneePivot, pitchAxis.clone());
+        }
+
+        if (kneeNode) {
+          const baseHelper = new THREE.Group();
+          baseHelper.name = 'PepperBaseHelper';
+          kneeNode.add(baseHelper);
+
+          const baseNodes = baseNodeNames
+            .map((name) => gltf.scene.getObjectByName(name))
+            .filter(Boolean);
+          baseNodes.forEach((node) => baseHelper.attach(node));
+
+          scene.updateMatrixWorld(true);
+          baseCompensation.worldMatrix.copy(baseHelper.matrixWorld);
+          baseCompensation.worldMatrix.decompose(
+            scratchVector,
+            scratchQuatA,
+            baseCompensation.worldScale
+          );
+          baseCompensation.helper = baseHelper;
+          baseCompensation.knee = kneeNode;
+        }
+
+        console.log('Pepper loaded. Animated joints:', Array.from(jointState.keys()));
+      },
+      undefined,
+      (error) => {
+        console.error('Unable to load pepper.glb', error);
+      }
+    );
+
+    function updateUpperBody(pitchAngle, rollAngle) {
+      const pivot = hipControllers.upperPivot;
+      if (!pivot) return;
+
+      pivot.object.quaternion.copy(pivot.initial);
+      scratchQuatA.setFromAxisAngle(pitchAxis, pitchAngle);
+      scratchQuatB.setFromAxisAngle(rollAxis, rollAngle);
+      pivot.object.quaternion.multiply(scratchQuatA);
+      pivot.object.quaternion.multiply(scratchQuatB);
+
+      const upper = hipControllers.upperBody;
+      if (upper) {
+        upper.object.quaternion.copy(upper.initial);
+      }
+    }
+
+    function updateLowerBody(elapsed) {
+      const torsoPitch = Math.sin(elapsed * 1.0) * 0.45;
+      const torsoRoll = 0;
+      const kneeDrive = Math.max(0, Math.sin(elapsed * 1.0 + Math.PI / 2)) * 0.45;
+
+      applyController(hipControllers.kneePivot, kneeDrive);
+      updateUpperBody(torsoPitch, torsoRoll);
+
+      if (baseCompensation.helper && baseCompensation.knee) {
+        scene.updateMatrixWorld(true);
+        const helperParent = baseCompensation.helper.parent;
+        if (helperParent) {
+          helperParent.updateMatrixWorld(true);
+          scratchMatrix.copy(helperParent.matrixWorld).invert().multiply(baseCompensation.worldMatrix);
+          scratchMatrix.decompose(
+            baseCompensation.helper.position,
+            baseCompensation.helper.quaternion,
+            scratchScale
+          );
+          baseCompensation.helper.scale.copy(baseCompensation.worldScale);
+          baseCompensation.helper.updateMatrixWorld(true);
+        }
+      }
+    }
+
+    function updateArmsAndHead(t) {
+      jointState.forEach((state) => {
+        const raw = Math.sin(t * 1.6 + state.phase) * state.amplitude + state.offset;
+        const angle = state.positiveOnly ? Math.max(0, raw) : raw;
+        state.object.quaternion.copy(state.initial);
+        scratchAxisQuat.setFromAxisAngle(state.axis, angle);
+        state.object.quaternion.multiply(scratchAxisQuat);
+      });
+    }
+
+    function animate() {
+      requestAnimationFrame(animate);
+      const elapsed = clock.getElapsedTime();
+
+      updateArmsAndHead(elapsed);
+      updateLowerBody(elapsed);
+
+      renderer.render(scene, camera);
+    }
+
+    animate();
+
+    window.addEventListener('resize', () => {
+      camera.aspect = window.innerWidth / window.innerHeight;
+      camera.updateProjectionMatrix();
+      renderer.setSize(window.innerWidth, window.innerHeight);
+    });
+  </script>
+</body>
+</html>

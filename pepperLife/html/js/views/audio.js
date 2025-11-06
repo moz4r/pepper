@@ -3,7 +3,7 @@ import { api } from '../api.js';
 const template = `
   <style>
     .direct-controls .control-group { margin-bottom: 1.5rem; }
-    .direct-controls .control-group label { display: block; margin-bottom: 0.5rem; font-size: 0.9em; color: #555; }
+    .direct-controls .control-group label { display: flex; align-items: baseline; gap: 6px; margin-bottom: 0.5rem; font-size: 0.9em; color: #555; }
     .direct-controls .input-group { display: flex; gap: 8px; }
     .direct-controls .input-group input { flex-grow: 1; }
     .direct-controls .vu-meter-bar { background: #eee; border-radius: 4px; height: 25px; overflow: hidden; }
@@ -11,6 +11,12 @@ const template = `
     .direct-controls .btn.on { border-color: #1e6b2d; background-color: #28a745; color: white; }
     .direct-controls .btn.off { border-color: #e02727; background-color: #dc3545; color: white; }
     .direct-controls .btn i { margin-right: 8px; }
+    .vad-slider-row { display: flex; align-items: center; gap: 12px; }
+    .vad-slider-row input[type=range] { flex: 1; }
+    .vad-hint { font-size: 0.78em; color: #666; margin-top: 0.25rem; }
+    .vad-feedback { font-size: 0.8em; color: #0f766e; min-height: 1.1em; margin-top: 0.25rem; }
+    .vad-feedback[data-state="error"] { color: #b91c1c; }
+    .vad-feedback[data-state="pending"] { color: #b45309; }
   </style>
   <div class="card direct-controls">
     <div class="title">Contrôles Audio & Langue</div>
@@ -49,6 +55,17 @@ const template = `
     <div class="control-group">
         <label>Niveau sonore (écoute)</label>
         <div class="vu-meter-bar"><div id="vu-meter-level"></div></div>
+    </div>
+    <div class="control-group">
+        <label for="vad-slider">
+            Sensibilité VAD
+            <span id="vad-value" style="font-size:0.8em;color:#666;">(niveau 3)</span>
+        </label>
+        <div class="vad-slider-row">
+            <input type="range" id="vad-slider" min="1" max="5" step="1" value="3">
+        </div>
+        <div class="vad-hint">1 = très sensible (déclenchement rapide), 5 = moins sensible.</div>
+        <div class="vad-feedback" id="vad-feedback"></div>
     </div>
   </div>
 `;
@@ -113,10 +130,11 @@ export function init() {
   const feedbackLang = document.getElementById('feedback-lang');
 
   const micToggleBtn = document.getElementById('mic-toggle-btn');
-
   const micIcon = micToggleBtn.querySelector('i');
-
   const micLabel = micToggleBtn.querySelector('span');
+  const vadSlider = document.getElementById('vad-slider');
+  const vadValueLabel = document.getElementById('vad-value');
+  const vadFeedback = document.getElementById('vad-feedback');
 
 
 
@@ -296,24 +314,69 @@ export function init() {
 
   });
 
+  // --- VAD Sensitivity Logic ---
+  const updateVadLabel = (level) => {
+    const value = parseInt(level, 10);
+    if (vadValueLabel) {
+      const safe = Number.isFinite(value) ? value : 3;
+      vadValueLabel.textContent = `(niveau ${safe})`;
+    }
+  };
+
+  const setVadFeedback = (text, state = '') => {
+    if (!vadFeedback) return;
+    vadFeedback.textContent = text || '';
+    if (state) {
+      vadFeedback.dataset.state = state;
+    } else {
+      vadFeedback.removeAttribute('data-state');
+    }
+  };
+
+  const saveVadLevel = async (level) => {
+    if (!Number.isFinite(level)) return;
+    try {
+      if (vadSlider) vadSlider.disabled = true;
+      setVadFeedback('Enregistrement...', 'pending');
+      await api.settingsSet({ audio: { vad_level: level } });
+      setVadFeedback('Niveau appliqué !', '');
+      setTimeout(() => setVadFeedback(''), 2000);
+    } catch (err) {
+      console.warn('Impossible de mettre à jour le VAD:', err);
+      setVadFeedback(`Erreur: ${err && err.message ? err.message : err}`, 'error');
+    } finally {
+      if (vadSlider) vadSlider.disabled = false;
+    }
+  };
+
+  if (vadSlider) {
+    updateVadLabel(vadSlider.value);
+    vadSlider.addEventListener('input', () => {
+      updateVadLabel(vadSlider.value);
+    });
+    vadSlider.addEventListener('change', () => {
+      const level = parseInt(vadSlider.value, 10);
+      updateVadLabel(level);
+      saveVadLevel(level);
+    });
+  }
+
 
 
   // --- Initial State & Pollers ---
 
   const loadConfig = async () => {
-
       try {
-
           currentConfig = await api.configGetUser();
-
+          const vadLevel = parseInt(currentConfig?.audio?.vad_level, 10);
+          if (vadSlider && Number.isFinite(vadLevel)) {
+              vadSlider.value = vadLevel;
+              updateVadLabel(vadLevel);
+          }
       } catch (e) {
-
           console.warn("Could not load user config:", e);
-
           currentConfig = {}; // Fallback to empty config
-
       }
-
   };
 
 

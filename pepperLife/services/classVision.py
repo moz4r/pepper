@@ -110,7 +110,24 @@ class Vision(object):
 
     def client(self):
         if self._client is None:
-            self._client = OpenAI(timeout=15.0)
+            api_key = None
+            try:
+                api_key = (self.config.get('openai', {}) or {}).get('api_key')
+            except Exception:
+                api_key = None
+            if isinstance(api_key, str):
+                api_key = api_key.strip()
+            if not api_key:
+                env_key = os.getenv("OPENAI_API_KEY")
+                if isinstance(env_key, str) and env_key.strip():
+                    api_key = env_key.strip()
+
+            client_kwargs = {"timeout": 15.0}
+            if api_key:
+                client_kwargs["api_key"] = api_key
+            else:
+                self.log("[Vision] OPENAI_API_KEY manquant dans la config et l'environnement.", level='error')
+            self._client = OpenAI(**client_kwargs)
         return self._client
 
     def start_camera(self):

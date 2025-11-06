@@ -20,11 +20,17 @@ import json
 import time
 import sys
 import signal
+import io
 
 try:
     from urllib.parse import urlparse
 except ImportError:
     from urlparse import urlparse
+
+try:
+    text_type = unicode
+except NameError:
+    text_type = str
 
 try:
     from http.server import SimpleHTTPRequestHandler, HTTPServer
@@ -48,6 +54,10 @@ class LauncherService:
         self.process = None
         self.logs = collections.deque(maxlen=200)
         self.service_status = "Checking..."
+        self.autostart_enabled = False
+        self.autostart_has_run = False
+        self._config_paths = self._compute_config_paths()
+        self.refresh_autostart_flag()
 
     def _read_pipe(self, pipe):
         try:
@@ -120,6 +130,7 @@ class LauncherService:
             thread = threading.Thread(target=self._read_pipe, args=(self.process.stdout,))
             thread.daemon = True
             thread.start()
+            self.autostart_has_run = True
             return True
         except Exception as e:
             self.logger.error("Erreur lors du lancement: {}".format(e))
@@ -128,6 +139,7 @@ class LauncherService:
 
     def is_running(self):
         if self.process and self.process.poll() is None:
+            self.autostart_has_run = True
             return True
         
         if self.process:
@@ -140,6 +152,92 @@ class LauncherService:
 
     def get_logs(self):
         return list(self.logs)
+
+    def _compute_config_paths(self):
+        bin_dir = os.path.dirname(os.path.abspath(__file__))
+        root_dir = os.path.dirname(bin_dir)
+        default_path = os.path.join(root_dir, 'config.json.default')
+        user_path = os.path.expanduser('~/.config/pepperlife/config.json')
+        return default_path, user_path
+
+    def _read_config_file(self, path):
+        if not path or not os.path.exists(path):
+            return {}
+        try:
+            with io.open(path, 'r', encoding='utf-8') as fh:
+                data = json.load(fh)
+            if isinstance(data, dict):
+                return data
+            self.logger.warning("Config JSON inattendu (%s): type %s", path, type(data))
+        except ValueError as exc:
+            self.logger.warning("Config JSON invalide (%s): %s", path, exc)
+        except Exception as exc:
+            self.logger.debug("Lecture du fichier de config impossible (%s): %s", path, exc)
+        return {}
+
+    def _load_autostart_flag(self):
+        default_path, user_path = self._config_paths
+        autostart = False
+        for source, path in (("default", default_path), ("user", user_path)):
+            data = self._read_config_file(path)
+            if not data:
+                continue
+            boot_section = data.get('boot') if isinstance(data, dict) else {}
+            if isinstance(boot_section, dict) and 'autostart_pepperlife' in boot_section:
+                autostart = bool(boot_section.get('autostart_pepperlife'))
+                if source == "user":
+                    break
+        self.autostart_enabled = autostart
+        return self.autostart_enabled
+
+    def refresh_autostart_flag(self):
+        return self._load_autostart_flag()
+
+    def get_wakeup_boot_status(self):
+        try:
+            al_memory = self.session.service("ALMemory")
+            raw_value = al_memory.getData("ALDiagnosis/ActiveDiagnosisFinished")
+        except Exception as exc:
+            self.logger.debug("WakeUp status unavailable: %s", exc)
+            return "UNKNOWN"
+        if isinstance(raw_value, (bytes, bytearray)):
+            try:
+                raw_value = raw_value.decode("utf-8", "ignore")
+            except Exception:
+                raw_value = str(raw_value)
+        if raw_value is None:
+            return "RUN"
+        if isinstance(raw_value, text_type):
+            normalized = raw_value.strip().lower()
+            if normalized == "wakeup":
+                return "OK"
+            if not normalized:
+                return "RUN"
+        return "UNKNOWN"
+
+    def restart_robot(self):
+        try:
+            al_system = self.session.service("ALSystem")
+            if not al_system:
+                raise RuntimeError("ALSystem indisponible")
+            al_system.reboot()
+            self.logger.info("Commande de redémarrage robot envoyée")
+            return True
+        except Exception as exc:
+            self.logger.error("Impossible de redémarrer le robot: %s", exc)
+            return False
+
+    def shutdown_robot(self):
+        try:
+            al_system = self.session.service("ALSystem")
+            if not al_system:
+                raise RuntimeError("ALSystem indisponible")
+            al_system.shutdown()
+            self.logger.info("Commande d'arrêt robot envoyée")
+            return True
+        except Exception as exc:
+            self.logger.error("Impossible d'éteindre le robot: %s", exc)
+            return False
 
     def stop(self):
         if not self.is_running():
@@ -252,10 +350,15 @@ class WebHandler(SimpleHTTPRequestHandler):
     def do_GET(self):
         path = urlparse(self.path).path
         if path == '/api/launcher/status':
+            autostart_flag = self.launcher.refresh_autostart_flag()
+            wakeup_state = self.launcher.get_wakeup_boot_status()
             status = {
                 'is_running': self.launcher.is_running(),
                 'python_runner_installed': self.launcher.is_python_runner_installed(),
-                'service_status': self.launcher.service_status
+                'service_status': self.launcher.service_status,
+                'wakeup_boot': wakeup_state,
+                'autostart_pepperlife': autostart_flag,
+                'autostart_has_run': getattr(self.launcher, 'autostart_has_run', False),
             }
             self._json_response(200, status)
         elif path == '/api/launcher/logs':
@@ -275,6 +378,12 @@ class WebHandler(SimpleHTTPRequestHandler):
             self._json_response(200, {'success': result})
         elif path == '/api/service/restart':
             result = self.launcher.restart_pepper_life_service()
+            self._json_response(200, {'success': result})
+        elif path == '/api/robot/restart':
+            result = self.launcher.restart_robot()
+            self._json_response(200, {'success': result})
+        elif path == '/api/robot/shutdown':
+            result = self.launcher.shutdown_robot()
             self._json_response(200, {'success': result})
         else:
             self._json_response(404, {'error': 'Not Found'})

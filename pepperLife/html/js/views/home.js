@@ -1,3 +1,5 @@
+import { RobotVirtuel } from '../robotVirtuel.js';
+
 // API pour le lanceur lui-même (servi sur le même port que la page, 8080)
 const launcherApi = {
   getStatus: () => fetch('/api/launcher/status').then(r => r.json()),
@@ -5,6 +7,8 @@ const launcherApi = {
   stop: () => fetch('/api/launcher/stop', { method: 'POST' }).then(r => r.json()),
   restartService: () => fetch('/api/service/restart', { method: 'POST' }).then(r => r.json()),
   getLogs: () => fetch('/api/launcher/logs').then(r => r.json()),
+  restartRobot: () => fetch('/api/robot/restart', { method: 'POST' }).then(r => r.json()),
+  shutdownRobot: () => fetch('/api/robot/shutdown', { method: 'POST' }).then(r => r.json()),
 };
 
 const template = `
@@ -44,6 +48,7 @@ const template = `
     .backend-manager .status-dot { width: 12px; height: 12px; border-radius: 50%; background: #9aa4b2; box-shadow: 0 0 0 4px rgba(2,6,23,0.06); }
     .backend-manager .status-dot.running { background: #22c55e; }
     .backend-manager .status-dot.stopped { background: #ef4444; }
+    .backend-manager .status-dot.warning { background: #facc15; }
     .backend-manager .actions { display: flex; gap: 10px; }
 
     .btn {
@@ -66,36 +71,112 @@ const template = `
 
     .hidden { display: none; }
     .python-status { font-size: 0.9em; opacity: 0.9; color:#0b1220; }
+    .autostart-line { justify-content: space-between; align-items: center; gap: 18px; flex-wrap: wrap; }
+    .autostart-toggle {
+      display: inline-flex;
+      align-items: center;
+      gap: 10px;
+      cursor: pointer;
+      border-radius: 12px;
+      padding: 4px 6px;
+      transition: background .2s ease;
+      color: #0b1220;
+      font-weight: 600;
+    }
+    .autostart-toggle:hover {
+      background: rgba(148,163,184,0.12);
+    }
+    .autostart-toggle input {
+      display: none;
+    }
+    .autostart-toggle__switch {
+      position: relative;
+      width: 42px;
+      height: 24px;
+      border-radius: 999px;
+      background: rgba(148,163,184,0.55);
+      box-shadow: inset 0 0 0 1px rgba(15,23,42,0.12);
+      transition: background .24s ease, box-shadow .24s ease;
+    }
+    .autostart-toggle__switch::after {
+      content: '';
+      position: absolute;
+      top: 3px;
+      left: 3px;
+      width: 18px;
+      height: 18px;
+      border-radius: 50%;
+      background: #fff;
+      box-shadow: 0 2px 6px rgba(15,23,42,0.25);
+      transition: transform .24s ease;
+    }
+    .autostart-toggle input:checked + .autostart-toggle__switch {
+      background: #22c55e;
+      box-shadow: inset 0 0 0 1px rgba(15,118,110,0.16);
+    }
+    .autostart-toggle input:checked + .autostart-toggle__switch::after {
+      transform: translateX(18px);
+    }
+    .autostart-toggle__label {
+      font-size: 0.92em;
+      letter-spacing: .1px;
+    }
+    .autostart-note {
+      font-size: 0.8em;
+      color: #64748b;
+    }
+    .autostart-note[data-state="active"] {
+      color: #0f172a;
+      font-weight: 600;
+    }
+    .autostart-note[data-state="pending"] {
+      color: #b45309;
+      font-weight: 600;
+    }
+    .autostart-note[data-state="error"] {
+      color: #b91c1c;
+      font-weight: 600;
+    }
 
     /* --- Robot info card (refonte) --- */
     .robot-info-card {
       background: linear-gradient(180deg,#ffffff, #f6f8fb);
     }
-    .robot-info-card .content-grid {
-      display: grid;
-      grid-template-columns: 1fr auto 140px;
-      align-items: center;
-      gap: 1rem;
-    }
+    .robot-info-card .content-grid { display: grid; grid-template-columns: 1fr minmax(220px, 260px) 140px; align-items: start; gap: 1rem; }
     .robot-info-card .status-params { display: grid; grid-template-columns: 1fr 1fr; gap: .5rem; }
     .robot-info-card .status-item {
-      display: flex; justify-content: space-between; align-items: center;
-      padding: .5rem .65rem;
+      display: flex; flex-direction: column; align-items: flex-start;
+      gap: 0.35rem;
+      padding: .55rem .7rem;
       background: #fff;
       border-radius: 12px;
       border: 1px solid #e8edf5;
       color:#0b1220;
     }
     .robot-info-card .status-item .label { font-weight: 700; color: #334155; font-size: .9em; }
-    .robot-info-card .status-item .value { color: #0b1220; text-align: right; font-size: .92em; }
+    .robot-info-card .status-item .value { color: #0b1220; text-align: left; font-size: .92em; line-height: 1.35; width: 100%; }
     .robot-info-card .status-item .version-status { font-size: .8em; opacity: .8; }
-    .robot-info-card .status-image {
-      padding-left: 1rem; border-left: 1px dashed #e5e9f2;
-      display:flex; align-items:center; justify-content:center;
+    .robot-info-card .status-params { margin-top: 28px; }
+    .robot-info-card .status-robot {
+      padding-left: 1rem;
+      margin-top: -36px;
+      border-left: 1px dashed #e5e9f2;
+      display:flex;
+      align-items:flex-start;
+      justify-content:center;
+      padding-top: 5px;
+      padding-bottom: 5px;
     }
-    .robot-info-card .status-image img {
-      max-height: 180px; filter: drop-shadow(0 10px 22px rgba(2,6,23,.15));
+    .robot-info-card .status-robot .robot-virtuel {
+      position: relative;
+      width: 100%;
+      height: 100%;
+      min-height: 320px;
+      border-radius: 16px;
+      background: radial-gradient(circle at 50% 120%, rgba(59,130,246,0.18), transparent 55%), linear-gradient(180deg, rgba(148,163,184,0.12), transparent);
+      overflow: hidden;
     }
+    .robot-info-card .status-robot .robot-virtuel__fallback { width: 100%; height: 100%; display:flex; align-items:center; justify-content:center; color:#475569; font-weight:600; font-size: .9rem; text-align:center; padding: 0 12px; }
     .power-control { position: relative; display: flex; align-items: center; justify-content: center; }
     #power-icon { font-size: 2rem; cursor: pointer; padding: 10px; color:#0b1220; border-radius:12px; }
     #power-icon:hover{ background:#eef2f7; }
@@ -108,6 +189,22 @@ const template = `
     }
     .power-menu .btn{ background:#374151; border-color:#4b5563; box-shadow:none; }
     .power-menu .btn:hover{ background:#4b5563; }
+
+    .console-watermark {
+      position: fixed;
+      width: 150px;
+      opacity: 0.92;
+      pointer-events: none;
+      z-index: 59;
+      transition: top .3s ease, left .3s ease;
+    }
+    .console-watermark img {
+      display: block;
+      width: 100%;
+      height: auto;
+      object-fit: contain;
+      margin: 0;
+    }
 
     /* --- Console dock: DARK, 90vh --- */
     .console-dock {
@@ -200,7 +297,20 @@ const template = `
 
     /* Responsive */
     @media (max-width: 980px) {
+      .console-watermark { width: 130px; }
       .console-dock { left: 16px; right: 16px; bottom: 16px; }
+      .robot-info-card .content-grid { grid-template-columns: 1fr; }
+      .robot-info-card .status-params { margin-top: 0; }
+      .robot-info-card .status-robot { border-left: none; padding-left: 0; margin-top: 0; padding-top: 5px; padding-bottom: 5px; }
+      .robot-info-card .status-robot .robot-virtuel {
+        height: auto;
+        min-height: 260px;
+        margin-top: 12px;
+      }
+      .power-control { justify-content: flex-start; }
+    }
+    @media (max-width: 640px) {
+      .console-watermark { width: 110px; }
     }
   </style>
 
@@ -213,14 +323,26 @@ const template = `
         <div id="service-status-text" style="flex-grow: 1;">Service PepperLife NaoQI : Vérification...</div>
         <button id="restart-service-btn" class="btn btn-ghost" style="padding: 4px 8px; font-size: .8rem;"><i class="bi bi-arrow-clockwise"></i> Relancer</button>
       </div>
-  <div class="status-line">
-    <div id="status-dot" class="status-dot"></div>
-    <div id="status-text" style="flex-grow: 1;">Backend : Vérification...</div>
-    <div class="actions">
-      <button id="start-btn" class="btn hidden"><span style="font-size: 1.2em;">🧠</span> Démarrer</button>
-      <button id="stop-btn" class="btn hidden"><i class="bi bi-stop-circle"></i> Arrêter</button>
-    </div>
-  </div>
+      <div class="status-line">
+        <div id="wakeup-status-dot" class="status-dot"></div>
+        <div id="wakeup-status-text" style="flex-grow: 1;">WakeUp Boot : Vérification...</div>
+      </div>
+      <div class="status-line autostart-line">
+        <label class="autostart-toggle" for="autostart-toggle">
+          <input type="checkbox" id="autostart-toggle" />
+          <span class="autostart-toggle__switch" aria-hidden="true"></span>
+          <span class="autostart-toggle__label">Autostart PepperLife</span>
+        </label>
+        <span id="autostart-note" class="autostart-note"></span>
+      </div>
+      <div class="status-line">
+        <div id="status-dot" class="status-dot"></div>
+        <div id="status-text" style="flex-grow: 1;">Backend : Vérification...</div>
+        <div class="actions">
+          <button id="start-btn" class="btn hidden"><span style="font-size: 1.2em;">🧠</span> Démarrer</button>
+          <button id="stop-btn" class="btn hidden"><i class="bi bi-stop-circle"></i> Arrêter</button>
+        </div>
+      </div>
     </div>
 
     <div class="card robot-info-card">
@@ -233,8 +355,10 @@ const template = `
           <div class="status-item"><span class="label">IP</span><span id="info-ip" class="value">—</span></div>
           <div class="status-item"><span class="label">Internet</span><span id="info-internet" class="value">—</span></div>
         </div>
-        <div class="status-image">
-          <img src="img/pepper.png" alt="Pepper Robot"/>
+        <div class="status-robot">
+          <div id="robot-virtuel" class="robot-virtuel" data-state="idle">
+            <div class="robot-virtuel__fallback" data-fallback="true">Chargement du modèle 3D…</div>
+          </div>
         </div>
         <div class="power-control">
           <i class="bi bi-power" id="power-icon" title="Alimentation"></i>
@@ -248,6 +372,9 @@ const template = `
   </div>
 
   <!-- Bottom console dock -->
+  <div class="console-watermark" data-align="right" data-offset="0" aria-hidden="true">
+    <img src="./img/romeo.png" alt="Romeo watermark">
+  </div>
   <div class="console-dock" id="console-dock">
     <div class="console-header">
       <div class="console-title">
@@ -282,6 +409,25 @@ let logsPollerDisabled = false;
 let lastRenderedLogs = [];
 let versionCheckDone = false; // Flag to ensure version check runs only once
 let versionStatusText = ''; // Persist version status indicator
+let robotVirtuelInstance = null;
+let jointPoller = null;
+let jointFetchInFlight = false;
+let jointPollErrorCount = 0;
+let jointPollApi = null;
+let jointDebugLogged = false;
+const JOINT_POLL_INTERVAL_MS = 450;
+let autostartSyncing = false;
+let autostartStartInFlight = false;
+let autostartStartTriggered = false;
+let autostartToggleEl = null;
+let autostartNoteEl = null;
+let watermarkEls = [];
+let updateWatermarkFn = null;
+let dockEl = null;
+let dockTransitionListener = null;
+let autostartManualHold = false;
+let autostartHasRun = false;
+let jointPollingAllowed = false;
 
 function parseVersionString(value) {
   if (!value) return null;
@@ -301,12 +447,87 @@ function compareVersionArrays(a, b) {
   return 0;
 }
 
+function setAutostartNote(text, state = '') {
+  if (!autostartNoteEl) return;
+  autostartNoteEl.textContent = text;
+  if (state) {
+    autostartNoteEl.dataset.state = state;
+  } else {
+    delete autostartNoteEl.dataset.state;
+  }
+}
+
 function showNavTabs(show) {
   document.querySelectorAll('#nav a').forEach(a => {
     if (a.dataset.page !== '#/') {
       a.style.display = show ? '' : 'none';
     }
   });
+}
+
+function normalizeJointPayload(payload) {
+  const out = {};
+  if (!payload || typeof payload !== 'object') {
+    return out;
+  }
+  Object.entries(payload).forEach(([joint, value]) => {
+    if (value === null || value === undefined) {
+      return;
+    }
+    let angle = value;
+    if (typeof value === 'object') {
+      angle = value.angle;
+    }
+    if (typeof angle === 'number' && isFinite(angle)) {
+      out[joint] = angle;
+    }
+  });
+  return out;
+}
+
+async function pollJointSnapshot() {
+  if (!jointPollApi || !robotVirtuelInstance) return;
+  if (!jointPollingAllowed) return;
+  if (jointFetchInFlight) return;
+
+  jointFetchInFlight = true;
+  try {
+    const data = await jointPollApi.motionJoints();
+    const joints = normalizeJointPayload(data && data.joints);
+    if (Object.keys(joints).length > 0) {
+      if (!jointDebugLogged) {
+        console.debug('[RobotVirtuel] Snapshot articulations (rad):', joints);
+        jointDebugLogged = true;
+      }
+      robotVirtuelInstance.setJointAngles(joints);
+    }
+    jointPollErrorCount = 0;
+  } catch (err) {
+    jointPollErrorCount += 1;
+    if (jointPollErrorCount === 1 || jointPollErrorCount % 15 === 0) {
+      console.warn('[Home] Impossible de récupérer les articulations:', err);
+    }
+  } finally {
+    jointFetchInFlight = false;
+  }
+}
+
+function startJointPolling(api) {
+  jointPollApi = api;
+  if (jointPoller) return;
+  jointPoller = setInterval(pollJointSnapshot, JOINT_POLL_INTERVAL_MS);
+  pollJointSnapshot();
+}
+
+function stopJointPolling() {
+  if (jointPoller) {
+    clearInterval(jointPoller);
+    jointPoller = null;
+  }
+  jointPollingAllowed = false;
+  jointFetchInFlight = false;
+  jointPollApi = null;
+  jointDebugLogged = false;
 }
 
 function updateRobotStatus(status, data = null) {
@@ -323,6 +544,9 @@ function updateRobotStatus(status, data = null) {
     if (ipEl) ipEl.textContent = errorVal;
     if (internetEl) internetEl.textContent = errorVal;
     if (versionEl) versionEl.textContent = errorVal;
+    if (robotVirtuelInstance && typeof robotVirtuelInstance.updateBatteryStatus === 'function') {
+      robotVirtuelInstance.updateBatteryStatus(null);
+    }
     return;
   }
 
@@ -330,10 +554,13 @@ function updateRobotStatus(status, data = null) {
   if (data.battery && data.battery.charge > 80) batteryIcon = 'bi-battery-full';
   if (data.battery && data.battery.plugged) batteryIcon += '-charging';
 
-  if (naoqiEl) naoqiEl.textContent = data.naoqi_version || 'N/A';
+  if (naoqiEl) naoqiEl.innerHTML = (data.naoqi_version || 'N/A').toString().replace(/\n/g, '<br>');
   if (batteryEl) batteryEl.innerHTML = data.battery ? '<i class="bi ' + batteryIcon + '"></i> ' + (data.battery.charge || 'N/A') + '%' : 'N/A';
-  if (ipEl) ipEl.innerHTML = (data.ip_addresses || []).join('<br>') || 'N/A';
-  if (internetEl) internetEl.textContent = data.internet_connected ? 'OK' : 'Déconnecté';
+  if (robotVirtuelInstance && typeof robotVirtuelInstance.updateBatteryStatus === 'function') {
+    robotVirtuelInstance.updateBatteryStatus(data.battery || null);
+  }
+  if (ipEl) ipEl.innerHTML = ((data.ip_addresses || []).join('\n') || 'N/A').split('\n').join('<br>');
+  if (internetEl) internetEl.innerHTML = (data.internet_connected ? 'OK' : 'Déconnecté');
   if (versionEl) {
     const localVersion = data.version || 'N/A';
     versionEl.innerHTML = '<div>' + localVersion + '</div>'; // Mettre la version dans un div
@@ -383,6 +610,10 @@ async function checkLauncherStatus(api) {
   const statusText = document.getElementById('status-text');
   const serviceStatusDot = document.getElementById('service-status-dot');
   const serviceStatusText = document.getElementById('service-status-text');
+  const wakeupStatusDot = document.getElementById('wakeup-status-dot');
+  const wakeupStatusText = document.getElementById('wakeup-status-text');
+  if (!autostartToggleEl) autostartToggleEl = document.getElementById('autostart-toggle');
+  if (!autostartNoteEl) autostartNoteEl = document.getElementById('autostart-note');
   const startBtn = document.getElementById('start-btn');
   const stopBtn = document.getElementById('stop-btn');
   const logsContainer = document.getElementById('logs-container');
@@ -391,18 +622,23 @@ async function checkLauncherStatus(api) {
   try {
     const status = await launcherApi.getStatus();
 
-    // Statut du lanceur Python 3
     if (status.python_runner_installed) {
       pythonRunnerStatus.innerHTML = '<div class="status-dot" style="background-color: #22c55e;"></div> <div>Lanceur Python 3 : OK</div>';
     } else {
       pythonRunnerStatus.innerHTML = '<div class="status-dot" style="background-color: #ef4444;"></div> <div>Lanceur Python 3 : Manquant</div>';
     }
 
-    // Statut du service NaoQI
-    if (status.service_status === "OK") {
+    if (autostartToggleEl) {
+      autostartToggleEl.disabled = !status.is_running;
+      autostartToggleEl.title = status.is_running ? '' : 'Backend requis pour modifier';
+    }
+
+    const serviceOk = status.service_status === 'OK';
+
+    if (serviceOk) {
       serviceStatusText.textContent = 'Service PepperLife NaoQI : OK';
       serviceStatusDot.className = 'status-dot running';
-    } else if (status.service_status === "FAILED") {
+    } else if (status.service_status === 'FAILED') {
       serviceStatusText.textContent = 'Service PepperLife NaoQI : FAILED';
       serviceStatusDot.className = 'status-dot stopped';
     } else {
@@ -410,17 +646,75 @@ async function checkLauncherStatus(api) {
       serviceStatusDot.className = 'status-dot';
     }
 
-    // Statut du backend principal
+    const wakeupState = (status.wakeup_boot || '').toUpperCase();
+    if (wakeupStatusText && wakeupStatusDot) {
+      if (wakeupState === 'OK') {
+        wakeupStatusText.textContent = 'WakeUp Boot : OK';
+        wakeupStatusDot.className = 'status-dot running';
+      } else if (wakeupState === 'RUN') {
+        wakeupStatusText.textContent = 'WakeUp Boot : En cours';
+        wakeupStatusDot.className = 'status-dot warning';
+      } else {
+        wakeupStatusText.textContent = 'WakeUp Boot : Indisponible';
+        wakeupStatusDot.className = 'status-dot';
+      }
+    }
+
+    const autostartEnabled = Boolean(status.autostart_pepperlife);
+    const serverAutostartHasRun = Boolean(status.autostart_has_run);
+    if (!autostartStartInFlight && !status.is_running) {
+      autostartHasRun = serverAutostartHasRun;
+    } else if (status.is_running) {
+      autostartHasRun = true;
+    }
+    if (autostartToggleEl) {
+      autostartSyncing = true;
+      autostartToggleEl.checked = autostartEnabled;
+      autostartToggleEl.setAttribute('aria-checked', autostartEnabled ? 'true' : 'false');
+      autostartSyncing = false;
+    }
+    if (autostartEnabled) {
+      if (status.is_running) {
+        setAutostartNote('PepperLife est en cours d\'exécution', 'active');
+      } else if (autostartStartInFlight) {
+        setAutostartNote('Démarrage automatique en cours...', 'pending');
+      } else if (!serviceOk) {
+        setAutostartNote('Service PepperLife requis', 'pending');
+      } else if (!autostartHasRun && wakeupState === 'OK') {
+        setAutostartNote('WakeUp prêt — démarrage automatique', 'active');
+      } else if (autostartHasRun) {
+        setAutostartNote('Démarrage automatique déjà effectué', 'active');
+      } else {
+        setAutostartNote('WakeUp indisponible', 'error');
+      }
+    } else {
+      setAutostartNote('');
+    }
+    if (!status.is_running && autostartNoteEl) {
+      setAutostartNote('Backend requis pour modifier', 'pending');
+    } else if (autostartNoteEl && autostartNoteEl.dataset.state === 'pending') {
+      setAutostartNote('');
+    }
+
     if (status.is_running) {
+      autostartHasRun = true;
       statusText.textContent = 'Backend : Démarré';
       statusDot.className = 'status-dot running';
       startBtn.classList.add('hidden');
       stopBtn.classList.remove('hidden');
       consoleDot.style.background = '#16a34a';
       showNavTabs(true);
-
-      // Le backend tourne, on peut appeler ses APIs
-      api.systemInfo().then(data => updateRobotStatus('ok', data)).catch(() => updateRobotStatus('error'));
+      autostartStartTriggered = false;
+      api.systemInfo()
+        .then((data) => {
+          updateRobotStatus('ok', data);
+          jointPollingAllowed = true;
+          startJointPolling(api);
+        })
+        .catch(() => {
+          stopJointPolling();
+          updateRobotStatus('error');
+        });
     } else {
       statusText.textContent = 'Backend : Arrêté';
       statusDot.className = 'status-dot stopped';
@@ -428,33 +722,75 @@ async function checkLauncherStatus(api) {
       stopBtn.classList.add('hidden');
       consoleDot.style.background = '#ef4444';
       showNavTabs(false);
-      updateRobotStatus('off'); // Manually set to "off"
+      stopJointPolling();
+      updateRobotStatus('off');
+
+      if (autostartEnabled && !autostartManualHold && !autostartHasRun) {
+        if (!serviceOk || wakeupState !== 'OK') {
+          autostartStartTriggered = false;
+        }
+        if (serviceOk && wakeupState === 'OK' && !autostartStartTriggered && !autostartStartInFlight) {
+          autostartStartInFlight = true;
+          setAutostartNote('Démarrage automatique en cours...', 'pending');
+          autostartHasRun = true;
+          launcherApi.start()
+            .then((res) => {
+              autostartStartTriggered = Boolean(res && res.success);
+            })
+            .catch((err) => {
+              autostartStartTriggered = false;
+              console.warn('[Home] Lancement auto PepperLife impossible:', err);
+              setAutostartNote('Impossible de lancer automatiquement', 'error');
+            })
+            .finally(() => {
+              autostartStartInFlight = false;
+            });
+        }
+      } else {
+        autostartStartTriggered = false;
+      }
     }
 
-    // Logs (sauf si en pause)
     if (!logsPollerDisabled) {
       const logData = await launcherApi.getLogs();
       lastRenderedLogs = (logData.logs || []).map(sanitizeLogLine);
       renderLogs(logsContainer, lastRenderedLogs);
     }
   } catch (e) {
-    statusText.textContent = "Erreur de com. avec le lanceur.";
-    statusDot.className = 'status-dot'; // Neutral grey
+    statusText.textContent = 'Erreur de com. avec le lanceur.';
+    statusDot.className = 'status-dot';
     pythonRunnerStatus.innerHTML = '<div class="status-dot" style="background-color: #ef4444;"></div> <div>Lanceur : Erreur</div>';
     serviceStatusText.textContent = 'Service PepperLife NaoQI : Erreur';
+    if (wakeupStatusText && wakeupStatusDot) {
+      wakeupStatusText.textContent = 'WakeUp Boot : Erreur';
+      wakeupStatusDot.className = 'status-dot';
+    }
+    if (autostartToggleEl) {
+      autostartToggleEl.disabled = true;
+      autostartToggleEl.title = 'Statut inconnu';
+      autostartToggleEl.setAttribute('aria-checked', autostartToggleEl.checked ? 'true' : 'false');
+    }
+    if (autostartToggleEl && autostartToggleEl.checked) {
+      setAutostartNote('Lancement auto indisponible', 'error');
+    } else {
+      setAutostartNote('');
+    }
+    stopJointPolling();
+    autostartStartInFlight = false;
+    autostartStartTriggered = false;
+    jointPollingAllowed = false;
     updateRobotStatus('off');
     showNavTabs(false);
 
-    // Reset buttons to a neutral, non-spinning state
     if (startBtn) {
-        startBtn.classList.remove('hidden');
-        startBtn.disabled = false;
-        startBtn.innerHTML = '<span style="font-size: 1.2em;">🧠</span> Démarrer';
+      startBtn.classList.remove('hidden');
+      startBtn.disabled = false;
+      startBtn.innerHTML = '<span style="font-size: 1.2em;">🧠</span> Démarrer';
     }
     if (stopBtn) {
-        stopBtn.classList.add('hidden');
-        stopBtn.disabled = false;
-        stopBtn.innerHTML = '<i class="bi bi-stop-circle"></i> Arrêter';
+      stopBtn.classList.add('hidden');
+      stopBtn.disabled = false;
+      stopBtn.innerHTML = '<i class="bi bi-stop-circle"></i> Arrêter';
     }
   }
 }
@@ -642,6 +978,9 @@ function pollUntilStopped(api) {
 }
 
 export function init(api) {
+  robotVirtuelInstance = new RobotVirtuel({ container: '#robot-virtuel' });
+  robotVirtuelInstance.init();
+
   const startBtn = document.getElementById('start-btn');
   const stopBtn = document.getElementById('stop-btn');
   const restartServiceBtn = document.getElementById('restart-service-btn');
@@ -652,6 +991,7 @@ export function init(api) {
   const shutdownBtn = document.getElementById('shutdown-btn-robot');
 
   const dock = document.getElementById('console-dock');
+  dockEl = dock;
   const dockToggle = document.getElementById('toggle-dock');
   const fullscreenBtn = document.getElementById('toggle-fullscreen');
   const pauseBtn = document.getElementById('pause-stream');
@@ -659,6 +999,105 @@ export function init(api) {
   const clearBtn = document.getElementById('clear-logs');
   const filterInput = document.getElementById('log-filter');
   const badge = document.getElementById('console-badge');
+  autostartToggleEl = document.getElementById('autostart-toggle');
+  autostartNoteEl = document.getElementById('autostart-note');
+  watermarkEls = Array.from(document.querySelectorAll('.console-watermark'));
+
+  const scheduleWatermarkUpdate = (delay = 0) => {
+    if (delay > 0) {
+      setTimeout(() => requestAnimationFrame(updateWatermarkFn), delay);
+    } else {
+      requestAnimationFrame(updateWatermarkFn);
+    }
+  };
+
+  updateWatermarkFn = () => {
+    if (!watermarkEls.length || !dock) return;
+    const rect = dock.getBoundingClientRect();
+    watermarkEls.forEach((el) => {
+      if (!el || !el.isConnected) return;
+      const height = el.offsetHeight || 0;
+      const offsetAttr = parseFloat(el.dataset.offset);
+      const gap = Number.isFinite(offsetAttr) ? offsetAttr : 16;
+      const top = Math.max(16, rect.top - height - gap);
+      el.style.top = `${top}px`;
+      el.style.right = 'auto';
+      const align = (el.dataset.align || 'left').toLowerCase();
+      const width = el.offsetWidth || 0;
+      if (align === 'right') {
+        const desiredLeft = rect.right - width;
+        const maxLeft = Math.max(16, Math.min(window.innerWidth - width - 16, desiredLeft));
+        el.style.left = `${maxLeft}px`;
+      } else {
+        const left = Math.max(16, rect.left);
+        el.style.left = `${left}px`;
+      }
+    });
+  };
+
+  watermarkEls.forEach((el) => {
+    const img = el.querySelector('img');
+    if (img && !img.complete) {
+      img.addEventListener('load', () => scheduleWatermarkUpdate(), { once: true });
+    }
+  });
+
+  if (dock && watermarkEls.length) {
+    scheduleWatermarkUpdate();
+    window.addEventListener('resize', updateWatermarkFn);
+    dockTransitionListener = (event) => {
+      if (event && event.target === dock && (event.propertyName === 'height' || event.propertyName === 'transform')) {
+        scheduleWatermarkUpdate();
+        scheduleWatermarkUpdate(360);
+      }
+    };
+    dock.addEventListener('transitionend', dockTransitionListener);
+  }
+
+  if (autostartToggleEl) {
+    autostartToggleEl.disabled = true;
+    autostartToggleEl.addEventListener('change', async (event) => {
+      if (autostartSyncing) return;
+      if (autostartToggleEl.disabled) return;
+      const enabled = event.target.checked;
+      const previousHold = autostartManualHold;
+      autostartToggleEl.disabled = true;
+      if (enabled) {
+        setAutostartNote('Activation du lancement automatique...', 'pending');
+        autostartManualHold = false;
+        autostartHasRun = false;
+      } else {
+        setAutostartNote('');
+        autostartStartTriggered = false;
+        autostartManualHold = true;
+        autostartHasRun = true;
+      }
+      try {
+        const result = await api.settingsSet({ boot: { autostart_pepperlife: enabled } });
+        if (!result || result.ok !== true) {
+          throw new Error(result && result.error ? result.error : 'set settings failed');
+        }
+        autostartManualHold = !enabled;
+        if (!enabled) {
+          autostartHasRun = true;
+        }
+      } catch (err) {
+        console.warn('[Home] Impossible de mettre à jour l\'autostart via backend:', err);
+        autostartSyncing = true;
+        autostartToggleEl.checked = !enabled;
+        autostartToggleEl.setAttribute('aria-checked', autostartToggleEl.checked ? 'true' : 'false');
+        autostartSyncing = false;
+        autostartManualHold = previousHold;
+      } finally {
+        try {
+          await checkLauncherStatus(api);
+        } catch (refreshErr) {
+          console.warn('[Home] Rafraîchissement autostart impossible:', refreshErr);
+        }
+        autostartToggleEl.disabled = false;
+      }
+    });
+  }
 
   // Interactions - dock
   dockToggle.addEventListener('click', () => {
@@ -666,6 +1105,8 @@ export function init(api) {
     dockToggle.innerHTML = dock.classList.contains('is-collapsed')
       ? '<i class="bi bi-arrows-angle-expand"></i><span class="hide-sm"> Déployer</span>'
       : '<i class="bi bi-arrows-angle-contract"></i><span class="hide-sm"> Replier</span>';
+    scheduleWatermarkUpdate();
+    scheduleWatermarkUpdate(400);
   });
 
   fullscreenBtn.addEventListener('click', () => {
@@ -673,6 +1114,8 @@ export function init(api) {
     fullscreenBtn.innerHTML = dock.classList.contains('is-fullscreen')
       ? '<i class="bi bi-fullscreen-exit"></i><span class="hide-sm"> Réduire</span>'
       : '<i class="bi bi-arrows-fullscreen"></i><span class="hide-sm"> Agrandir</span>';
+    scheduleWatermarkUpdate();
+    scheduleWatermarkUpdate(400);
   });
 
   pauseBtn.addEventListener('click', () => {
@@ -722,6 +1165,7 @@ export function init(api) {
   // Wire Start/Stop
   if (startBtn) {
     startBtn.addEventListener('click', async () => {
+      autostartManualHold = false;
       try {
         startBtn.disabled = true;
         startBtn.innerHTML = '<span class="spinner" aria-hidden="true"></span> Démarrage...';
@@ -740,6 +1184,7 @@ export function init(api) {
 
   if (stopBtn) {
     stopBtn.addEventListener('click', async () => {
+      autostartManualHold = true;
       try {
         stopBtn.disabled = true;
         stopBtn.innerHTML = '<span class="spinner" aria-hidden="true"></span> Arrêt...';
@@ -778,18 +1223,36 @@ export function init(api) {
     powerMenu.style.display = powerMenu.style.display === 'block' ? 'none' : 'block';
   });
 
-  restartBtn.addEventListener('click', () => {
-    if (confirm('Êtes-vous sûr de vouloir redémarrer le robot ?')) {
-      api.restartRobot().then(() => alert('Le robot va redémarrer.')).catch(err => alert('Erreur lors du redémarrage: ' + err.message));
-    }
+  restartBtn.addEventListener('click', async () => {
     powerMenu.style.display = 'none';
+    if (!confirm('Êtes-vous sûr de vouloir redémarrer le robot ?')) {
+      return;
+    }
+    try {
+      const res = await launcherApi.restartRobot();
+      if (!res || res.success === false) {
+        throw new Error(res && res.error ? res.error : 'réponse invalide');
+      }
+      alert('Le robot va redémarrer.');
+    } catch (err) {
+      alert('Erreur lors du redémarrage: ' + (err && err.message ? err.message : err));
+    }
   });
 
-  shutdownBtn.addEventListener('click', () => {
-    if (confirm('Êtes-vous sûr de vouloir éteindre le robot ?')) {
-      api.shutdownRobot().then(() => alert("Le robot va s'éteindre.")).catch(err => alert("Erreur lors de l'extinction: " + err.message));
-    }
+  shutdownBtn.addEventListener('click', async () => {
     powerMenu.style.display = 'none';
+    if (!confirm('Êtes-vous sûr de vouloir éteindre le robot ?')) {
+      return;
+    }
+    try {
+      const res = await launcherApi.shutdownRobot();
+      if (!res || res.success === false) {
+        throw new Error(res && res.error ? res.error : 'réponse invalide');
+      }
+      alert("Le robot va s'éteindre.");
+    } catch (err) {
+      alert("Erreur lors de l'extinction: " + (err && err.message ? err.message : err));
+    }
   });
 
   // Vérification initiale + polling
@@ -799,4 +1262,25 @@ export function init(api) {
 
 export function cleanup() {
   if (statusPoller) clearInterval(statusPoller);
+  stopJointPolling();
+  jointPollErrorCount = 0;
+  autostartStartInFlight = false;
+  autostartStartTriggered = false;
+  setAutostartNote('');
+  autostartToggleEl = null;
+  autostartNoteEl = null;
+  if (updateWatermarkFn) {
+    window.removeEventListener('resize', updateWatermarkFn);
+  }
+  if (dockEl && dockTransitionListener) {
+    dockEl.removeEventListener('transitionend', dockTransitionListener);
+  }
+  dockEl = null;
+  dockTransitionListener = null;
+  watermarkEls = [];
+  updateWatermarkFn = null;
+  if (robotVirtuelInstance) {
+    robotVirtuelInstance.dispose();
+    robotVirtuelInstance = null;
+  }
 }

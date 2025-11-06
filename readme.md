@@ -15,7 +15,9 @@
 - **🕺 Animations Dynamiques** : Le LLM peut déclencher des animations contextuelles (`^start(...)`) à partir d'un catalogue généré automatiquement, rendant l'interaction plus vivante.
 - **💡 Indicateurs LED & Animations Intuitifs** : Les LEDs passent en **Bleu** (écoute), **Violet** (réflexion), **Blanc** (parole/attente) et des boucles d'animations dédiées différencient réflexion et prise de parole.
 - **🔇 Gestion Audio Avancée** : Systèmes anti-larsen et anti-bruit pour une meilleure qualité audio.
+- **🎚️ Réglages Audio Instantanés** : Un curseur VAD et les commandes de volume/micro accessibles depuis l'onglet *Audio* permettent d’ajuster la sensibilité et l’AGC sans SSH.
 - **🌐 Interface Web de Contrôle** : Une interface web complète pour gérer le robot, surveiller son état, et configurer ses fonctionnalités.
+- **⚡ Autostart configurable** : Choisissez depuis l’onglet *Chat* quel mode (GPT, Ollama ou aucun) doit se lancer automatiquement avec PepperLife.
 - **🧩 Architecture Modulaire** : Le système est conçu en classes Python normalisées (`classLEDs`, `classAnimation`, etc.) pour une maintenance et une évolution facilitées.
 - **⚙️ Service Unifié NAOqi** : `pepper_life_service.py` harmonise les API NAOqi 2.5 et 2.9 via un service commun, garantissant une compatibilité multi-firmware.
 

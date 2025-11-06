@@ -1,0 +1,148 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="utf-8" />
+  <title>NAO Web Demo</title>
+  <style>
+    html, body {
+      margin: 0;
+      height: 100%;
+      overflow: hidden;
+      background: #08131f;
+      color: #f1f5ff;
+      font-family: Arial, sans-serif;
+    }
+    #info {
+      position: absolute;
+      top: 12px;
+      left: 12px;
+      padding: 10px 16px;
+      background: rgba(0, 0, 0, 0.55);
+      border-radius: 8px;
+      font-size: 14px;
+      line-height: 1.4;
+      max-width: 320px;
+    }
+    canvas {
+      display: block;
+    }
+  </style>
+</head>
+<body>
+  <div id="info">
+    <strong>NAO Web Demo</strong><br />
+    Orbit with drag, zoom with scroll.<br />
+    Procedural arm sway + head motion.
+  </div>
+
+  <script type="importmap">
+    {
+      "imports": {
+        "three": "../../vendor/three/build/three.module.js",
+        "three/examples/jsm/controls/OrbitControls.js": "../../vendor/three/examples/jsm/controls/OrbitControls.js",
+        "three/examples/jsm/loaders/GLTFLoader.js": "../../vendor/three/examples/jsm/loaders/GLTFLoader.js"
+      }
+    }
+  </script>
+
+  <script type="module">
+    import * as THREE from 'three';
+    import { OrbitControls } from 'three/examples/jsm/controls/OrbitControls.js';
+    import { GLTFLoader } from 'three/examples/jsm/loaders/GLTFLoader.js';
+
+    const renderer = new THREE.WebGLRenderer({ antialias: true });
+    renderer.setPixelRatio(window.devicePixelRatio);
+    renderer.setSize(window.innerWidth, window.innerHeight);
+    renderer.outputEncoding = THREE.sRGBEncoding;
+    document.body.appendChild(renderer.domElement);
+
+    const scene = new THREE.Scene();
+    scene.background = new THREE.Color(0x0d1a2a);
+
+    const camera = new THREE.PerspectiveCamera(45, window.innerWidth / window.innerHeight, 0.1, 100);
+    camera.position.set(1.6, 1.2, 2.2);
+
+    const controls = new OrbitControls(camera, renderer.domElement);
+    controls.target.set(0.0, 0.75, 0.0);
+    controls.update();
+
+    scene.add(new THREE.HemisphereLight(0xffffff, 0x1a2330, 0.9));
+
+    const dirLight = new THREE.DirectionalLight(0xffffff, 0.8);
+    dirLight.position.set(2.0, 3.0, 1.2);
+    scene.add(dirLight);
+
+    const ground = new THREE.Mesh(
+      new THREE.PlaneGeometry(8, 8),
+      new THREE.MeshStandardMaterial({ color: 0x151f2f, roughness: 0.92, metalness: 0.0 })
+    );
+    ground.rotation.x = -Math.PI / 2;
+    ground.position.y = -0.01;
+    scene.add(ground);
+
+    const loader = new GLTFLoader();
+    const jointConfigs = [
+      { name: 'LShoulderPitch_link', axis: new THREE.Vector3(1, 0, 0), amplitude: 0.5, phase: Math.PI, offset: 0.0 },
+      { name: 'RShoulderPitch_link', axis: new THREE.Vector3(1, 0, 0), amplitude: 0.5, phase: 0.0, offset: 0.0 },
+      { name: 'LShoulderRoll_link', axis: new THREE.Vector3(0, 0, 1), amplitude: 0.25, phase: Math.PI / 2, offset: 0.1 },
+      { name: 'RShoulderRoll_link', axis: new THREE.Vector3(0, 0, 1), amplitude: 0.25, phase: -Math.PI / 2, offset: -0.1 },
+      { name: 'HeadYaw_link', axis: new THREE.Vector3(0, 1, 0), amplitude: 0.35, phase: 0.0, offset: 0.0 },
+      { name: 'HeadPitch_link', axis: new THREE.Vector3(1, 0, 0), amplitude: 0.2, phase: Math.PI / 2, offset: 0.05 }
+    ];
+
+    const jointState = new Map();
+    const clock = new THREE.Clock();
+
+    loader.load(
+      'nao.glb',
+      (gltf) => {
+        gltf.scene.position.y = 0.0;
+        scene.add(gltf.scene);
+        gltf.scene.traverse((obj) => {
+          jointConfigs.forEach((cfg) => {
+            if (!jointState.has(cfg.name) && obj.name === cfg.name) {
+              jointState.set(cfg.name, {
+                object: obj,
+                initial: obj.quaternion.clone(),
+                axis: cfg.axis.clone().normalize(),
+                amplitude: cfg.amplitude,
+                phase: cfg.phase,
+                offset: cfg.offset || 0.0
+              });
+            }
+          });
+        });
+        console.log('NAO joints registered:', Array.from(jointState.keys()));
+      },
+      undefined,
+      (error) => {
+        console.error('Failed to load nao.glb', error);
+      }
+    );
+
+    function updateJoints(t) {
+      jointState.forEach((state) => {
+        const angle = Math.sin(t * 1.6 + state.phase) * state.amplitude + state.offset;
+        state.object.quaternion.copy(state.initial);
+        const delta = new THREE.Quaternion().setFromAxisAngle(state.axis, angle);
+        state.object.quaternion.multiply(delta);
+      });
+    }
+
+    function animate() {
+      requestAnimationFrame(animate);
+      const elapsed = clock.getElapsedTime();
+      updateJoints(elapsed);
+      renderer.render(scene, camera);
+    }
+
+    animate();
+
+    window.addEventListener('resize', () => {
+      camera.aspect = window.innerWidth / window.innerHeight;
+      camera.updateProjectionMatrix();
+      renderer.setSize(window.innerWidth, window.innerHeight);
+    });
+  </script>
+</body>
+</html>

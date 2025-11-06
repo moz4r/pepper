@@ -162,6 +162,7 @@ def main():
         try:
             autolife = s.service("ALAutonomousLife")
             last_dialog_restart = 0.0
+            last_dialog_stop = 0.0
             while not stop_event.is_set():
                 try:
                     is_gpt_running = chat_manager.is_running() if chat_manager else False
@@ -188,8 +189,6 @@ def main():
                             try:
                                 topics = al_dialog.getAllLoadedTopics()
                                 log("Watchdog: ALDialog.getAllLoadedTopics() -> {}".format(topics), level='debug')
-                                if topics:
-                                    is_dialog_active = True
                             except Exception:
                                 pass
                         if not is_dialog_active and hasattr(al_dialog, 'isDialogRunning'):
@@ -207,11 +206,18 @@ def main():
 
                     if is_gpt_running:
                         if not is_29 and is_dialog_active:
-                            log("Watchdog: Le chatbot est actif, mais ALDialog semble tourner. Arrêt de ALDialog (uniquement pour < 2.9).", level='warning')
-                            try:
-                                al_dialog.stopDialog()
-                            except Exception as e:
-                                log("Watchdog: Erreur en tentant d'arrêter ALDialog: {}".format(e), level='debug')
+                            now = time.time()
+                            if now - last_dialog_stop > 15.0:
+                                log("Watchdog: Le chatbot est actif, mais ALDialog semble tourner. Arrêt de ALDialog (uniquement pour < 2.9).", level='warning')
+                                try:
+                                    al_dialog.stopDialog()
+                                except Exception as e:
+                                    log("Watchdog: Erreur en tentant d'arrêter ALDialog: {}".format(e), level='debug')
+                                finally:
+                                    last_dialog_stop = now
+                            else:
+                                remaining = max(0.0, 15.0 - (now - last_dialog_stop))
+                                log("Watchdog: ALDialog encore détecté actif, nouvel essai dans {:.1f}s.".format(remaining), level='debug')
                     else:
                         if not is_29:
                             if not is_dialog_active:
@@ -345,7 +351,10 @@ def main():
         try: s.service("ALMotion").wakeUp()
         except Exception as e: log("Réveil échoué: {}".format(e), level='error')
 
-    if CONFIG.get('boot', {}).get('start_chatbot_on_boot', False):
+    auto_chat_mode = (CONFIG.get('boot', {}).get('auto_chat_mode') or '').strip().lower()
+    if auto_chat_mode in ('gpt', 'ollama'):
+        start_chat(auto_chat_mode)
+    elif CONFIG.get('boot', {}).get('start_chatbot_on_boot', False):
         start_chat('gpt')
     else:
         log("Chatbot non démarré. ALDialog sera activé après la phrase de démarrage.", level='info', color=bcolors.OKGREEN)

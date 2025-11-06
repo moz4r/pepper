@@ -32,6 +32,20 @@ export function render(root, api) {
         </div>
 
         <div class="options-grid">
+            <div class="card chat-option" id="auto-chat-card">
+                <div class="title"><i class="bi bi-play-circle"></i> Démarrage automatique</div>
+                <p class="description">Choisissez quel mode Pepper doit lancer automatiquement quand le backend démarre.</p>
+                <div class="form-group">
+                    <label for="auto-chat-mode">Mode lancé au démarrage</label>
+                    <select id="auto-chat-mode">
+                        <option value="none">Aucun (laisser ALDialog)</option>
+                        <option value="gpt">ChatGPT (OpenAI)</option>
+                        <option value="ollama">Ollama</option>
+                    </select>
+                </div>
+                <button class="btn" id="save-auto-chat"><i class="bi bi-save"></i> Enregistrer</button>
+                <span class="status-inline" id="auto-chat-feedback"></span>
+            </div>
             <div class="card chat-option">
                 <div class="title"><input type="radio" name="chat_mode" value="basic" id="mode-basic"> <label for="mode-basic">Basic Channel</label></div>
                 <p class="description">Le robot écoute les commandes locales simples, sans IA externe. Utile pour le débogage.</p>
@@ -302,6 +316,9 @@ function init(api) {
     const defaultOllamaBtnLabel = saveOllamaBtn ? saveOllamaBtn.innerHTML : '';
     const saveSttBtn = document.getElementById('save-stt-settings');
     const defaultSttBtnLabel = saveSttBtn ? saveSttBtn.innerHTML : '';
+    const autoChatSelect = document.getElementById('auto-chat-mode');
+    const autoChatSaveBtn = document.getElementById('save-auto-chat');
+    const autoChatFeedback = document.getElementById('auto-chat-feedback');
 
     const apiKeyInput = document.getElementById('gpt-api-key');
     const modelSelect = document.getElementById('gpt-model');
@@ -474,6 +491,25 @@ function init(api) {
         updateMainButton(status, btn);
     }
 
+    function resolveAutoChatMode(config) {
+        const bootCfg = config?.boot || {};
+        const raw = (bootCfg.auto_chat_mode || '').toString().trim().toLowerCase();
+        if (raw === 'gpt' || raw === 'ollama' || raw === 'none') {
+            return raw;
+        }
+        return bootCfg.start_chatbot_on_boot ? 'gpt' : 'none';
+    }
+
+    function setAutoChatFeedback(message, state = '') {
+        if (!autoChatFeedback) return;
+        autoChatFeedback.textContent = message || '';
+        if (state) {
+            autoChatFeedback.dataset.state = state;
+        } else {
+            autoChatFeedback.removeAttribute('data-state');
+        }
+    }
+
     function loadConfig() {
         if (ollamaServerInput && ollamaServerInput.value) {
             const normalizedProbeServer = normalizeServerUrl(ollamaServerInput.value);
@@ -495,6 +531,12 @@ function init(api) {
             currentConfig = config;
             currentSystemPrompt = (gptPromptData && gptPromptData.content) || '';
             currentOllamaSystemPrompt = (ollamaPromptData && ollamaPromptData.content) || '';
+            if (autoChatSelect) {
+                const mode = resolveAutoChatMode(config);
+                const allowed = ['none', 'gpt', 'ollama'];
+                autoChatSelect.value = allowed.includes(mode) ? mode : 'none';
+                setAutoChatFeedback('');
+            }
 
             apiKeyInput.value = config.openai?.api_key || '';
             modelSelect.value = config.openai?.chat_model || 'gpt-4o-mini';
@@ -1049,6 +1091,36 @@ function init(api) {
                 saveOllamaBtn.innerHTML = defaultOllamaBtnLabel;
                 saveOllamaBtn.disabled = false;
             });
+        });
+    }
+
+    if (autoChatSaveBtn && autoChatSelect) {
+        const defaultAutoBtnLabel = autoChatSaveBtn.innerHTML;
+        autoChatSaveBtn.addEventListener('click', async () => {
+            const selectedMode = (autoChatSelect.value || 'none').toLowerCase();
+            setAutoChatFeedback('Enregistrement...', 'pending');
+            autoChatSaveBtn.disabled = true;
+            autoChatSaveBtn.innerHTML = 'Enregistrement...';
+            try {
+                await api.settingsSet({
+                    boot: {
+                        auto_chat_mode: selectedMode,
+                        start_chatbot_on_boot: selectedMode !== 'none'
+                    }
+                });
+                currentConfig.boot = Object.assign({}, currentConfig.boot, {
+                    auto_chat_mode: selectedMode,
+                    start_chatbot_on_boot: selectedMode !== 'none'
+                });
+                setAutoChatFeedback('Configuration enregistrée.', '');
+                setTimeout(() => setAutoChatFeedback(''), 2000);
+            } catch (err) {
+                console.warn('Impossible de mettre à jour le mode auto chat:', err);
+                setAutoChatFeedback(`Erreur: ${err && err.message ? err.message : err}`, 'error');
+            } finally {
+                autoChatSaveBtn.disabled = false;
+                autoChatSaveBtn.innerHTML = defaultAutoBtnLabel;
+            }
         });
     }
 

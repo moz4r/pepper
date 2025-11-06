@@ -4,3 +4,5 @@ emulateur_choregraphe/anim_player/PiyPepper_Animation_Player-0.1.zip
 pepperLife/config.json
 pepperLife/bin/.runpy3.sh.kate-swp
 AGENTS.md
+pepperLife/bin/lanceur.log
+pepperLife/bin/pepper_life_service.log

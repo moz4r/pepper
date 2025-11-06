@@ -138,7 +138,10 @@
     "_comment": "Configuration pour le démarrage du robot.",
     "boot_vieAutonome": true,
     "boot_reveille": true,
-    "start_chatbot_on_boot": false
+    "start_chatbot_on_boot": false,
+    "_comment_auto_mode": "Mode de chat lancé automatiquement: none, gpt, ollama.",
+    "auto_chat_mode": "none",
+    "autostart_pepperlife": false
   },
   "animations": {
     "_comment": "Configuration pour activer/désactiver certaines animations.",
