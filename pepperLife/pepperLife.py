@@ -52,9 +52,12 @@ def install_requirements(packages_to_install):
             sys.exit(1)
     log("Dépendances installées.", level='info', color=bcolors.OKGREEN)
     try:
+        import importlib
         import pkg_resources
+        pkg_resources = importlib.reload(pkg_resources)
+        fresh_working_set = pkg_resources.WorkingSet()
         for req in packages_to_install:
-            pkg_resources.require(req)
+            fresh_working_set.require(req)
         log("Vérification des dépendances réussie.", level='info', color=bcolors.OKGREEN)
     except Exception as e:
         log("Erreur de vérification après installation: {}".format(e), level='error', color=bcolors.FAIL)
@@ -309,6 +312,12 @@ def main():
         speaker.config = CONFIG
         if hasattr(vision_service, 'config'):
             vision_service.config = CONFIG
+        try:
+            web_srv = getattr(_tablet_ui, 'web_server', None)
+            if web_srv:
+                web_srv.update_runtime_config(CONFIG)
+        except Exception:
+            pass
 
     def start_chat(mode='gpt'):
         _reload_config(f"démarrage du chat ({mode})")

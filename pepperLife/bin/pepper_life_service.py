@@ -664,12 +664,45 @@ class PepperLifeService(object):
         self._connect()
         return self.naoqi_version
 
+    def _load_qianim_root(self, qianim_file_path):
+        """Parse un .qianim même lorsque des octets parasites suivent le XML."""
+        try:
+            return ET.parse(qianim_file_path).getroot()
+        except ET.ParseError as parse_err:
+            message = str(parse_err).lower()
+            if "junk after document element" not in message:
+                raise
+            try:
+                raw_bytes = Path(qianim_file_path).read_bytes()
+            except Exception:
+                raise
+            data = None
+            for encoding in ("utf-8", "latin-1"):
+                try:
+                    data = raw_bytes.decode(encoding)
+                    break
+                except UnicodeDecodeError:
+                    continue
+            if not data:
+                raise
+            root_match = re.search(r'<([A-Za-z_:][^\s>/]*)[^>]*>', data)
+            if not root_match:
+                raise
+            root_tag = root_match.group(1)
+            closing_tag = f"</{root_tag}>"
+            closing_index = data.rfind(closing_tag)
+            if closing_index == -1:
+                raise
+            truncated = data[:closing_index + len(closing_tag)]
+            return ET.fromstring(truncated)
+
     def _get_qianim_duration(self, qianim_file_path):
         """Calculates the duration of a .qianim animation."""
         try:
-            tree = ET.parse(qianim_file_path)
-            root = tree.getroot()
-            
+            root = self._load_qianim_root(qianim_file_path)
+            if root is None:
+                return 0.0
+
             max_frame = 0
             fps = 25 # Default fps
 

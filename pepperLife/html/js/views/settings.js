@@ -43,6 +43,7 @@ export async function render(root) {
             input.type = 'checkbox';
             input.checked = value;
             input.dataset.type = 'boolean';
+            group.appendChild(input);
         } else {
             input.type = 'text';
             input.dataset.type = (typeof value === 'number') ? 'number' : (Array.isArray(value) || (value !== null && typeof value === 'object')) ? 'json' : 'string';

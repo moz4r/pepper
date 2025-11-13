@@ -81,8 +81,9 @@ except ImportError:
     from SimpleHTTPServer import SimpleHTTPRequestHandler
     from SocketServer import TCPServer, ThreadingMixIn
 
-from .classSystem import version as SysVersion
+from .classSystem import version as SysVersion, RobotIdentityManager
 from .chatBots.ollama import call_ollama_api, list_models, normalize_base_url
+from .classChoreography import ChoreographyCoordinator
 
 try:
     from .classAudioUtils import avgabs
@@ -135,6 +136,44 @@ class WebServer(object):
         self._backend_logs = collections.deque(maxlen=500)
         self._naoqi_lock = threading.RLock()
         self._svc_cache = {}
+        self._runtime_config = {}
+        self.identity_manager = RobotIdentityManager(self.svc, self._logger)
+        self._last_identity_for_choreo = None
+        self.choreography = ChoreographyCoordinator(logger=self._logger)
+        try:
+            self.choreography.ensure_self_robot(self.get_robot_identity())
+            self.choreography.set_service_provider(self.svc)
+        except Exception:
+            pass
+
+    def set_robot_identity(self, identity):
+        if not self.identity_manager:
+            return
+        resolved = self.identity_manager.set_identity(identity)
+        self._sync_choreo_identity(resolved, source='set_robot_identity')
+
+    def get_robot_identity(self):
+        if not self.identity_manager:
+            return {'type': 'pepper'}
+        identity = self.identity_manager.get_identity()
+        self._sync_choreo_identity(identity, source='get_robot_identity')
+        return identity
+
+    def get_robot_type(self):
+        if not self.identity_manager:
+            return 'pepper'
+        return self.identity_manager.get_robot_type()
+
+    def _sync_choreo_identity(self, identity, source='identity'):
+        if not identity or not self.choreography:
+            return
+        if self._last_identity_for_choreo == identity:
+            return
+        try:
+            self.choreography.ensure_self_robot(identity)
+            self._last_identity_for_choreo = identity
+        except Exception as e:
+            self._logger("%s -> choreography update failed: %s" % (source, e), level='warning')
 
     def svc(self, name):
         """Récupère un service NAOqi sous verrou, renvoie un proxy verrouillé pour ses méthodes."""
@@ -154,6 +193,14 @@ class WebServer(object):
         except Exception as e:
             self._logger(f"[WebServer] svc({name}): exception while getting service: {e}", level='error')
             return None
+
+    def has_internet_connectivity(self, timeout=1.5):
+        try:
+            sock = socket.create_connection(('1.1.1.1', 53), timeout)
+            sock.close()
+            return True
+        except Exception:
+            return False
 
     def update_heartbeat(self):
         self._last_heartbeat = time.time()
@@ -212,6 +259,24 @@ class WebServer(object):
                 self._httpd.server_close()
             except Exception:
                 pass
+        if self.choreography:
+            self.choreography.shutdown()
+
+    def update_runtime_config(self, config):
+        try:
+            self._runtime_config = dict(config or {})
+        except Exception:
+            self._runtime_config = {}
+        if self.choreography:
+            mqtt_cfg = {}
+            if isinstance(self._runtime_config, dict):
+                mqtt_cfg = self._runtime_config.get('mqtt') or {}
+            try:
+                self.choreography.update_from_config(mqtt_cfg)
+                self.choreography.ensure_self_robot(self.get_robot_identity())
+                self.choreography.set_service_provider(self.svc)
+            except Exception as e:
+                self._logger("update_runtime_config failed: %s" % e, level='warning')
 
     def _make_handler(self):
         parent = self
@@ -396,6 +461,7 @@ class WebServer(object):
                 if path == '/api/wifi/scan': self._wifi_scan(); return
                 if path == '/api/wifi/status': self._wifi_status(); return
                 if path == '/api/apps/list': self._apps_list(); return
+                if path == '/api/choreo/state': self._choreo_state(); return
                 if path == '/api/memory/search': self._memory_search(parsed); return
                 if path == '/api/memory/get': self._memory_get(parsed); return
                 if path == '/api/settings/get': self._settings_get(); return
@@ -450,7 +516,10 @@ class WebServer(object):
                             pass
                         return
 
-                # Sinon, laisser SimpleHTTPRequestHandler gérer
+                # Sinon, laisser SimpleHTTPRequestHandler gérer pour les fichiers statiques
+                if path.startswith('/api/'):
+                    self._json(404, {'error': 'Unknown GET %s' % path})
+                    return
                 return SimpleHTTPRequestHandler.do_GET(self)
 
             def do_POST(self):
@@ -487,9 +556,17 @@ class WebServer(object):
                 if path == '/api/posture/set_state': self._posture_set_state(payload); return
                 if path == '/api/apps/start': self._apps_start(payload); return
                 if path == '/api/apps/stop': self._apps_stop(payload); return
+                if path == '/api/choreo/programs/add': self._choreo_program_add(payload); return
+                if path == '/api/choreo/programs/remove': self._choreo_program_remove(payload); return
+                if path == '/api/choreo/robots/select': self._choreo_select_robots(payload); return
+                if path == '/api/choreo/start': self._choreo_start(payload); return
+                if path == '/api/choreo/connect': self._choreo_connect(); return
+                if path == '/api/choreo/disconnect': self._choreo_disconnect(); return
+                if path == '/api/choreo/reset_remote': self._choreo_reset_remote(); return
                 if path == '/api/memory/set': self._memory_set(payload); return
                 if path == '/api/settings/set': self._settings_set(payload); return
                 if path == '/api/config/user': self._config_set_user(payload); return
+                if path == '/api/config/reload': self._config_reload(); return
                 if path == '/api/speak': self._speak(payload); return
                 if path == '/api/tts/set_language': self._set_tts_language(payload); return
                 if path == '/api/chat/start': self._chat_start(payload); return
@@ -621,8 +698,8 @@ class WebServer(object):
                     vision = self.server.parent.vision_service
                     camera = (payload or {}).get('camera')
                     if vision and camera in ('top', 'bottom'):
-                        # Assume vision.switch_camera accepte 'top'/'bottom' (adapter si besoin)
-                        ok = vision.switch_camera(camera)
+                        camera_index = 0 if camera == 'top' else 1
+                        ok = vision.switch_camera(camera_index)
                         self._json(200, {'status': 'ok' if ok else 'failed', 'camera': camera})
                     else:
                         self._send_503('Vision service not available or invalid camera.')
@@ -767,11 +844,23 @@ class WebServer(object):
             def _get_system_info(self):
                 """GET /api/system/info - Récupère les informations système générales."""
                 info = {'version': getattr(self.server.parent, 'version_text', 'dev'),
+                        'robot_type': parent.get_robot_type() if hasattr(parent, 'get_robot_type') else 'pepper',
+                        'robot_name': None,
                         'naoqi_version': None, 'ip_addresses': [], 'internet_connected': False,
-                        'battery': {'charge': None, 'plugged': None}}
+                        'battery': {'charge': None, 'plugged': None},
+                        'system': {'version': None, 'robot': None}}
+                try:
+                    custom_name = parent._get_robot_name_from_memory() if hasattr(parent, '_get_robot_name_from_memory') else None
+                except Exception:
+                    custom_name = None
                 try:
                     al_system = parent.svc('ALSystem')
-                    if al_system: info['naoqi_version'] = al_system.systemVersion()
+                    if al_system:
+                        info['naoqi_version'] = al_system.systemVersion()
+                        fallback_name = getattr(al_system, 'robotName', lambda: None)()
+                        info['robot_name'] = custom_name or fallback_name
+                        info['system']['robot'] = info['robot_name'] or 'N/A'
+                        info['system']['version'] = info['naoqi_version'] or info['system']['version']
                 except Exception: pass
                 try: info['ip_addresses'] = self._ip_addresses()
                 except Exception: pass
@@ -786,6 +875,10 @@ class WebServer(object):
                         except Exception: pass
                 except Exception:
                     pass
+                if not info['system']['robot']:
+                    info['system']['robot'] = info['robot_name'] or 'N/A'
+                if not info['system']['version']:
+                    info['system']['version'] = info['naoqi_version'] or 'N/A'
                 self._json(200, info)
 
             def _get_life_state(self):
@@ -1114,6 +1207,115 @@ class WebServer(object):
                 except Exception as e:
                     self._send_503('Erreur apps/stop pour {}: {}'.format(name, e))
 
+            def _get_choreo_manager(self):
+                manager = getattr(parent, 'choreography', None)
+                if not manager:
+                    self._send_503('Gestionnaire de chorégraphie indisponible')
+                    return None
+                return manager
+
+            def _choreo_state(self):
+                try:
+                    current_identity = parent.get_robot_identity()
+                    if current_identity:
+                        parent.set_robot_identity(current_identity)
+                except Exception:
+                    pass
+                manager = self._get_choreo_manager()
+                if not manager:
+                    return
+                try:
+                    state = manager.get_state()
+                    try:
+                        online = parent.has_internet_connectivity()
+                    except Exception:
+                        online = None
+                    state['network'] = {
+                        'online': online,
+                        'timestamp': time.time()
+                    }
+                    self._json(200, state)
+                except Exception as e:
+                    parent._logger("Erreur in _choreo_state: {}".format(e), level='error')
+                    self._send_503('Erreur choreo/state: {}'.format(e))
+
+            def _choreo_program_add(self, payload):
+                manager = self._get_choreo_manager()
+                if not manager:
+                    return
+                name = (payload or {}).get('name')
+                nature = (payload or {}).get('nature') or 'animation'
+                source = (payload or {}).get('source') or 'apps'
+                if not name:
+                    self._send_503('Nom de programme manquant')
+                    return
+                try:
+                    program = manager.add_program(name, nature, source)
+                    self._json(200, {'program': program})
+                except Exception as e:
+                    self._send_503('Erreur choreo/programs/add: {}'.format(e))
+
+            def _choreo_program_remove(self, payload):
+                manager = self._get_choreo_manager()
+                if not manager:
+                    return
+                program_id = (payload or {}).get('program_id')
+                if not program_id:
+                    self._send_503('Identifiant de programme manquant')
+                    return
+                removed = manager.remove_program(program_id)
+                self._json(200, {'removed': bool(removed)})
+
+            def _choreo_select_robots(self, payload):
+                manager = self._get_choreo_manager()
+                if not manager:
+                    return
+                robot_ids = (payload or {}).get('robot_ids') or []
+                manager.select_robots(robot_ids)
+                state = manager.get_state()
+                self._json(200, {'selected_robot_ids': state.get('selected_robot_ids', [])})
+
+            def _choreo_start(self, payload):
+                manager = self._get_choreo_manager()
+                if not manager:
+                    return
+                metadata = (payload or {}).get('metadata') or {}
+                try:
+                    result = manager.start(metadata)
+                    self._json(200, {'ok': True, 'command': result})
+                except Exception as e:
+                    self._send_503('Erreur choreo/start: {}'.format(e))
+
+            def _choreo_connect(self):
+                manager = self._get_choreo_manager()
+                if not manager:
+                    return
+                try:
+                    manager.connect_mqtt()
+                    self._json(200, {'ok': True})
+                except Exception as e:
+                    self._send_503('Erreur choreo/connect: {}'.format(e))
+
+            def _choreo_disconnect(self):
+                manager = self._get_choreo_manager()
+                if not manager:
+                    return
+                try:
+                    manager.disconnect_mqtt()
+                    self._json(200, {'ok': True})
+                except Exception as e:
+                    self._send_503('Erreur choreo/disconnect: {}'.format(e))
+
+            def _choreo_reset_remote(self):
+                manager = self._get_choreo_manager()
+                if not manager:
+                    return
+                try:
+                    manager.reset_remote_robots()
+                    self._json(200, {'ok': True})
+                except Exception as e:
+                    self._send_503('Erreur choreo/reset_remote: {}'.format(e))
+
             def _memory_search(self, parsed):
                 try:
                     query = parse_qs(parsed.query or '').get('pattern', [''])[0]
@@ -1238,6 +1440,17 @@ class WebServer(object):
                     return self._settings_set(payload)
                 except Exception as e:
                     self._send_503('config/user set error: %s' % e)
+
+            def _config_reload(self):
+                cb = getattr(parent, 'config_changed_callback', None)
+                if cb:
+                    try:
+                        cb({})
+                        self._json(200, {'ok': True})
+                    except Exception as e:
+                        self._send_503('config/reload error: %s' % e)
+                else:
+                    self._send_503('config/reload error: callback indisponible')
 
             def _speak(self, payload):
                 text = payload.get('text')

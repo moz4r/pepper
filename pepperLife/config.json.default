@@ -4,6 +4,32 @@
     "ip": "127.0.0.1",
     "port": 9559
   },
+  "mqtt": {
+    "_comment": "Paramètres MQTT pour synchroniser les chorégraphies multi-robots.",
+    "enabled": true,
+    "broker_url": "mqtt://moz4r.hd.free.fr:1883",
+    "_comment_credentials": "Laissez vide pour utiliser les variables d'environnement PEPPER_MQTT_USER / PEPPER_MQTT_PASS.",
+    "username": "pepper",
+    "password": "pepperlife***",
+    "_comment_client_id": "Identifiant client MQTT (laisser vide pour auto-génération).",
+    "client_id": "",
+    "_comment_keepalive": "Intervalle keepalive MQTT (secondes).",
+    "keepalive": 60,
+    "_comment_topics": "Préfixe commun aux topics utilisés par PepperLife.",
+    "topic_prefix": "pepperlife/choreo",
+    "presence_topic": "pepperlife/choreo/presence",
+    "command_topic": "pepperlife/choreo/commands",
+    "_comment_room": "Nom de salon ou suffixe permettant de regrouper plusieurs robots (sera complété automatiquement).",
+    "room_code": "",
+    "_comment_presence_interval": "Fréquence (secondes) de republication de présence.",
+    "presence_interval": 30,
+    "_comment_presence_qos": "QoS pour les messages de présence.",
+    "presence_qos": 0,
+    "_comment_insecure_tls": "true uniquement si vous utilisez un certificat auto-signé.",
+    "allow_insecure_tls": false,
+    "_comment_debug": "Active les logs MQTT détaillés coté client.",
+    "debug": false
+  },
   "stt": {
     "_comment": "Configuration de la reconnaissance vocale.",
     "engine": "openai",
@@ -127,7 +153,9 @@
       "c'est", 
       "je suis.", 
       "c est.", 
-      "c'est."
+      "c'est.",
+      "leurs parents",
+      "leurs parents."
     ]
   },
   "log": {

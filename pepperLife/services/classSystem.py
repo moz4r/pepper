@@ -45,6 +45,213 @@ class version(object):
         runner_path = '/home/nao/.local/share/PackageManager/apps/python3nao/bin/runpy3.sh'
         return os.path.exists(runner_path)
 
+
+class RobotIdentityManager(object):
+    """Centralise la détection et la gestion de l'identité robot."""
+
+    def __init__(self, svc_getter, logger=None):
+        self._svc_getter = svc_getter
+        self._logger = logger or (lambda *a, **k: None)
+        self._identity = None
+        self._custom_name = None
+        self._last_identity_log = (None, None)
+
+    def set_identity(self, identity):
+        if isinstance(identity, dict):
+            self._identity = self._augment_identity_with_name(dict(identity))
+        elif identity:
+            self._identity = self._augment_identity_with_name({'type': str(identity).strip().lower()})
+        else:
+            self._identity = self._augment_identity_with_name({'type': 'pepper'})
+        return self._identity
+
+    def get_identity(self):
+        if self._identity:
+            return self._identity
+        detected = self._detect_robot_identity()
+        if detected:
+            self._identity = self._augment_identity_with_name(detected)
+        return self._identity or {'type': 'pepper'}
+
+    def refresh_identity(self):
+        """Force une redétection (utilisé quand l'état robot peut changer)."""
+        self._identity = None
+        return self.get_identity()
+
+    def get_robot_type(self):
+        identity = self.get_identity()
+        value = identity.get('type')
+        if isinstance(value, str):
+            lowered = value.strip().lower()
+            return lowered or 'pepper'
+        if value is None:
+            return 'pepper'
+        return str(value).strip().lower() or 'pepper'
+
+    # ------------------------------------------------------------------ Internals
+    def _svc(self, name):
+        getter = self._svc_getter
+        if not callable(getter):
+            return None
+        try:
+            return getter(name)
+        except Exception:
+            return None
+
+    def _detect_robot_identity(self):
+        almem = self._svc('ALMemory')
+        if not almem:
+            return None
+        keys_to_try = (
+            "RobotConfig/Body/Type",
+            "RobotConfig/Body/Type/Value",
+            "Device/DeviceList/Body/Type",
+            "Device/DeviceList/Body/Type/Value",
+            "Device/SubDeviceList/Body/Type/Value",
+            "Body/Type",
+            "Body/Type/Value",
+        )
+        for key in keys_to_try:
+            try:
+                value = almem.getData(key)
+            except Exception:
+                continue
+            normalized = self._normalize_robot_type(value)
+            if normalized:
+                return {'type': normalized, 'raw': value, 'source': key}
+        return None
+
+    def _get_robot_name_from_memory(self):
+        if self._custom_name:
+            return self._custom_name
+        try:
+            al_system = self._svc('ALSystem')
+            if al_system:
+                for attr in ('robotName', 'getRobotName', 'deviceName'):
+                    fn = getattr(al_system, attr, None)
+                    if callable(fn):
+                        value = fn()
+                        if isinstance(value, str) and value.strip():
+                            self._custom_name = value.strip()
+                            return self._custom_name
+        except Exception:
+            pass
+        try:
+            almem = self._svc('ALMemory')
+            if almem:
+                for key in (
+                    "Device/SubDeviceList/Body/CustomName/Value",
+                    "Device/SubDeviceList/Head/CustomName/Value",
+                    "RobotConfig/Body/CustomName",
+                    "RobotConfig/Head/CustomName",
+                    "RobotConfig/Body/CustomName/Value",
+                    "RobotConfig/Head/CustomName/Value",
+                    "ALTextToSpeech/CurrentVoice",
+                ):
+                    try:
+                        value = almem.getData(key)
+                    except Exception:
+                        continue
+                    if isinstance(value, str) and value.strip():
+                        self._custom_name = value.strip()
+                        return self._custom_name
+        except Exception:
+            pass
+        return None
+
+    def _get_robot_serial(self):
+        al_system = self._svc('ALSystem')
+        if al_system:
+            for attr in ('getRobotSerial', 'robotSerial'):
+                fn = getattr(al_system, attr, None)
+                if callable(fn):
+                    try:
+                        value = fn()
+                    except Exception:
+                        continue
+                    if value:
+                        serial = str(value)
+                        self._logger("[Choreo] Serial via ALSystem.%s -> %s" % (attr, serial), level='debug')
+                        return serial
+        almem = self._svc('ALMemory')
+        if not almem:
+            return None
+        head_keys = (
+            "Device/SubDeviceList/Head/HeadId/Value",
+            "Device/SubDeviceList/Head/SerialNumber/Value",
+            "Device/SubDeviceList/Head/Serial/Value",
+            "Device/SubDeviceList/Head/HeadID/Value",
+            "Device/SubDeviceList/Head/HeadId/Sensor/Value",
+            "Device/SubDeviceList/Head/HeadId/Actuator/Value",
+            "RobotConfig/Head/HeadId",
+            "RobotConfig/Head/HeadID",
+            "RobotConfig/Head/HeadId/Value",
+            "RobotConfig/Head/HeadID/Value",
+            "Device/SubDeviceList/Head/ID/Value",
+            "Device/DeviceList/Head/ID/Value",
+            "Head/ID",
+            "Head/ID/Value"
+        )
+        for key in head_keys:
+            try:
+                value = almem.getData(key)
+                if value:
+                    serial = str(value)
+                    self._logger("[Choreo] Serial via Head key %s -> %s" % (key, serial), level='debug')
+                    return serial
+            except Exception:
+                continue
+        try:
+            config_keys = almem.getDataList("RobotConfig/")
+            candidate_keys = [k for k in config_keys if 'head' in k.lower() and 'id' in k.lower()]
+            if candidate_keys:
+                values = almem.getListData(candidate_keys)
+                for key, value in zip(candidate_keys, values):
+                    if value:
+                        serial = str(value)
+                        self._logger("[Choreo] Serial via RobotConfig key %s -> %s" % (key, serial), level='debug')
+                        return serial
+        except Exception:
+            pass
+        return None
+
+    def _augment_identity_with_name(self, identity):
+        if not isinstance(identity, dict):
+            return identity
+        identity = dict(identity)
+        if not identity.get('name'):
+            name = self._get_robot_name_from_memory()
+            if name:
+                identity['name'] = name
+        if not identity.get('serial'):
+            serial = self._get_robot_serial()
+            if serial:
+                identity['serial'] = serial
+        current = (identity.get('name'), identity.get('serial'))
+        if current != self._last_identity_log:
+            self._logger("[Choreo] Identité robot: name=%s serial=%s" % current, level='info')
+            self._last_identity_log = current
+        return identity
+
+    @staticmethod
+    def _normalize_robot_type(value):
+        if value is None:
+            return None
+        try:
+            text = value.strip()
+        except AttributeError:
+            text = str(value).strip()
+        if not text:
+            return None
+        lowered = text.lower()
+        if 'pepper' in lowered:
+            return 'pepper'
+        if 'nao' in lowered:
+            return 'nao'
+        if 'romeo' in lowered:
+            return 'romeo'
+        return lowered
+
 # --- Prompt dynamique --------------------------------------------------
 
 def build_system_prompt_in_memory(base_text, animation_families_list):

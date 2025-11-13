@@ -22,11 +22,36 @@ class Vision(object):
         self.sub = None
         self.is_streaming = False
         self.streaming_thread = None
-        self.current_camera_index = 0
+        self._current_camera_index = 0
         self.camera_users = 0
         self.lock = threading.Lock()
         self.ui_dir = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), "html")
         self.cam_png_path = os.path.join(self.ui_dir, "cam.png")
+
+    def _normalize_camera_index(self, camera_index):
+        """Pepper 2.9 exige un Int32 strict : convertir les entrées texte ou booléennes."""
+        if isinstance(camera_index, str):
+            key = camera_index.strip().lower()
+            if key in ("top", "0"):
+                return 0
+            if key in ("bottom", "1"):
+                return 1
+            try:
+                return int(key)
+            except ValueError:
+                raise ValueError("Camera index must be an integer or 'top'/'bottom'")
+        try:
+            return int(camera_index)
+        except (TypeError, ValueError):
+            raise ValueError("Camera index must be an integer or 'top'/'bottom'")
+
+    @property
+    def current_camera_index(self):
+        return self._current_camera_index
+
+    @current_camera_index.setter
+    def current_camera_index(self, value):
+        self._current_camera_index = self._normalize_camera_index(value)
 
     def _stream_loop(self):
         while self.is_streaming:
@@ -68,6 +93,7 @@ class Vision(object):
 
     def switch_camera(self, camera_index):
         with self.lock:
+            camera_index = self._normalize_camera_index(camera_index)
             was_streaming = self.is_streaming
             
             # Temporarily stop the stream to release the camera handle
@@ -135,11 +161,12 @@ class Vision(object):
             self.camera_users += 1
             self.log(f"[Cam] User added. Total users: {self.camera_users}")
             if self.camera_users == 1:
-                self.log(f"[Cam] First user, subscribing to camera index {self.current_camera_index}.")
+                cam_index = self.current_camera_index
+                self.log(f"[Cam] First user, subscribing to camera index {cam_index}.")
                 try:
                     self.cam = self.sess.service("ALVideoDevice")
                     name = "PepperLifeCam_%d" % int(time.time())
-                    self.sub = self.cam.subscribeCamera(name, self.current_camera_index, self.res, self.color, self.fps)
+                    self.sub = self.cam.subscribeCamera(name, cam_index, self.res, self.color, self.fps)
                     self.log("[Cam] ALVideoDevice subscribed: %s" % self.sub)
                     return True
                 except Exception as e:

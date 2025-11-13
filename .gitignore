@@ -6,3 +6,5 @@ pepperLife/bin/.runpy3.sh.kate-swp
 AGENTS.md
 pepperLife/bin/lanceur.log
 pepperLife/bin/pepper_life_service.log
+testScripts/nao_ground_debug.py
+testScripts/framemanager_loader.py

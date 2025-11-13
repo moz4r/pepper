@@ -2,26 +2,26 @@
 <html lang="en">
 <head>
   <meta charset="utf-8" />
-  <title>NAO Web Demo</title>
+  <title>NAO Web Walk Demo</title>
   <style>
     html, body {
       margin: 0;
       height: 100%;
       overflow: hidden;
-      background: #08131f;
-      color: #f1f5ff;
+      background: #081423;
+      color: #f5f7ff;
       font-family: Arial, sans-serif;
     }
     #info {
       position: absolute;
       top: 12px;
       left: 12px;
+      max-width: 360px;
       padding: 10px 16px;
-      background: rgba(0, 0, 0, 0.55);
       border-radius: 8px;
+      background: rgba(0, 0, 0, 0.55);
       font-size: 14px;
-      line-height: 1.4;
-      max-width: 320px;
+      line-height: 1.45;
     }
     canvas {
       display: block;
@@ -30,11 +30,10 @@
 </head>
 <body>
   <div id="info">
-    <strong>NAO Web Demo</strong><br />
+    <strong>NAO Web Walk</strong><br />
     Orbit with drag, zoom with scroll.<br />
-    Procedural arm sway + head motion.
+    Arms sway and legs march in place using simple sinusoidal joint animation.
   </div>
-
   <script type="importmap">
     {
       "imports": {
@@ -44,37 +43,40 @@
       }
     }
   </script>
-
   <script type="module">
     import * as THREE from 'three';
     import { OrbitControls } from 'three/examples/jsm/controls/OrbitControls.js';
     import { GLTFLoader } from 'three/examples/jsm/loaders/GLTFLoader.js';
 
     const renderer = new THREE.WebGLRenderer({ antialias: true });
-    renderer.setPixelRatio(window.devicePixelRatio);
+    renderer.setPixelRatio(window.devicePixelRatio || 1);
     renderer.setSize(window.innerWidth, window.innerHeight);
-    renderer.outputEncoding = THREE.sRGBEncoding;
+    if ('outputColorSpace' in renderer) {
+      renderer.outputColorSpace = THREE.SRGBColorSpace;
+    } else if ('outputEncoding' in renderer) {
+      renderer.outputEncoding = THREE.sRGBEncoding;
+    }
     document.body.appendChild(renderer.domElement);
 
     const scene = new THREE.Scene();
-    scene.background = new THREE.Color(0x0d1a2a);
+    scene.background = new THREE.Color(0x0d1a30);
 
     const camera = new THREE.PerspectiveCamera(45, window.innerWidth / window.innerHeight, 0.1, 100);
-    camera.position.set(1.6, 1.2, 2.2);
+    camera.position.set(1.6, 1.1, 2.1);
 
     const controls = new OrbitControls(camera, renderer.domElement);
-    controls.target.set(0.0, 0.75, 0.0);
+    controls.target.set(0.0, 0.7, 0.0);
     controls.update();
 
-    scene.add(new THREE.HemisphereLight(0xffffff, 0x1a2330, 0.9));
+    scene.add(new THREE.HemisphereLight(0xffffff, 0x1b2435, 0.92));
 
-    const dirLight = new THREE.DirectionalLight(0xffffff, 0.8);
-    dirLight.position.set(2.0, 3.0, 1.2);
+    const dirLight = new THREE.DirectionalLight(0xffffff, 0.85);
+    dirLight.position.set(2.3, 3.0, 1.4);
     scene.add(dirLight);
 
     const ground = new THREE.Mesh(
-      new THREE.PlaneGeometry(8, 8),
-      new THREE.MeshStandardMaterial({ color: 0x151f2f, roughness: 0.92, metalness: 0.0 })
+      new THREE.PlaneGeometry(10, 10),
+      new THREE.MeshStandardMaterial({ color: 0x162235, roughness: 0.92, metalness: 0.0 })
     );
     ground.rotation.x = -Math.PI / 2;
     ground.position.y = -0.01;
@@ -82,50 +84,122 @@
 
     const loader = new GLTFLoader();
     const jointConfigs = [
-      { name: 'LShoulderPitch_link', axis: new THREE.Vector3(1, 0, 0), amplitude: 0.5, phase: Math.PI, offset: 0.0 },
-      { name: 'RShoulderPitch_link', axis: new THREE.Vector3(1, 0, 0), amplitude: 0.5, phase: 0.0, offset: 0.0 },
-      { name: 'LShoulderRoll_link', axis: new THREE.Vector3(0, 0, 1), amplitude: 0.25, phase: Math.PI / 2, offset: 0.1 },
-      { name: 'RShoulderRoll_link', axis: new THREE.Vector3(0, 0, 1), amplitude: 0.25, phase: -Math.PI / 2, offset: -0.1 },
-      { name: 'HeadYaw_link', axis: new THREE.Vector3(0, 1, 0), amplitude: 0.35, phase: 0.0, offset: 0.0 },
-      { name: 'HeadPitch_link', axis: new THREE.Vector3(1, 0, 0), amplitude: 0.2, phase: Math.PI / 2, offset: 0.05 }
+      // Arms & head
+      { name: 'LShoulderPitch_link', axis: new THREE.Vector3(1, 0, 0), amplitude: 0.45, phase: Math.PI, speed: 0.95 },
+      { name: 'RShoulderPitch_link', axis: new THREE.Vector3(1, 0, 0), amplitude: 0.45, phase: 0, speed: 0.95 },
+      { name: 'LShoulderRoll_link', axis: new THREE.Vector3(0, 0, 1), amplitude: 0.28, phase: Math.PI / 2, speed: 1.05, offset: 0.08 },
+      { name: 'RShoulderRoll_link', axis: new THREE.Vector3(0, 0, 1), amplitude: 0.28, phase: -Math.PI / 2, speed: 1.05, offset: -0.08 },
+      { name: 'LElbowYaw_link', axis: new THREE.Vector3(0, 0, 1), amplitude: 0.25, phase: Math.PI / 3, speed: 1.2 },
+      { name: 'RElbowYaw_link', axis: new THREE.Vector3(0, 0, 1), amplitude: 0.25, phase: -Math.PI / 3, speed: 1.2 },
+      { name: 'LElbowRoll_link', axis: new THREE.Vector3(0, 0, 1), amplitude: 0.35, phase: Math.PI / 2, speed: 1.1, offset: -0.15 },
+      { name: 'RElbowRoll_link', axis: new THREE.Vector3(0, 0, 1), amplitude: 0.35, phase: -Math.PI / 2, speed: 1.1, offset: 0.15 },
+      { name: 'HeadYaw_link', axis: new THREE.Vector3(0, 1, 0), amplitude: 0.35, phase: 0, speed: 0.6 },
+      { name: 'HeadPitch_link', axis: new THREE.Vector3(1, 0, 0), amplitude: 0.2, phase: Math.PI / 2, speed: 0.75, offset: 0.05 },
+      // Legs
+      { name: 'LHipPitch_link', axis: new THREE.Vector3(0, 0, 1), amplitude: 0.30, phase: 0, speed: 1.6, invert: true, offset: 0.1 },
+      { name: 'RHipPitch_link', axis: new THREE.Vector3(0, 0, 1), amplitude: 0.30, phase: Math.PI, speed: 1.6, invert: true, offset: 0.1 },
+      { name: 'LKneePitch_link', axis: new THREE.Vector3(0, 0, 1), amplitude: 0.45, phase: 0, speed: 1.6, baseOffset: 0.3, clampPositive: true },
+      { name: 'RKneePitch_link', axis: new THREE.Vector3(0, 0, 1), amplitude: 0.45, phase: Math.PI, speed: 1.6, baseOffset: 0.3, clampPositive: true, invertClamp: true },
+      { name: 'LAnklePitch_link', axis: new THREE.Vector3(0, 0, 1), amplitude: 0.22, phase: Math.PI, speed: 1.6, offset: -0.1 },
+      { name: 'RAnklePitch_link', axis: new THREE.Vector3(0, 0, 1), amplitude: 0.22, phase: 0, speed: 1.6, offset: -0.1 }
     ];
 
-    const jointState = new Map();
     const clock = new THREE.Clock();
+    const jointState = new Map();
+
+    function createController(node, axis) {
+      if (!node) return null;
+      return {
+        object: node,
+        initial: node.quaternion.clone(),
+        axis: axis.clone().normalize()
+      };
+    }
+
+    function applyController(ctrl, angle) {
+      if (!ctrl) return;
+      ctrl.object.quaternion.copy(ctrl.initial);
+      const delta = new THREE.Quaternion().setFromAxisAngle(ctrl.axis, angle);
+      ctrl.object.quaternion.multiply(delta);
+    }
 
     loader.load(
       'nao.glb',
       (gltf) => {
-        gltf.scene.position.y = 0.0;
-        scene.add(gltf.scene);
+        const modelRoot = new THREE.Group();
+        modelRoot.name = 'NAORoot';
+        modelRoot.add(gltf.scene);
+        scene.add(modelRoot);
+
+        gltf.scene.rotation.set(-Math.PI / 2, 0, 0);
+        gltf.scene.updateMatrixWorld(true);
+
+        const bbox = new THREE.Box3().setFromObject(gltf.scene);
+        const center = bbox.getCenter(new THREE.Vector3());
+        const size = bbox.getSize(new THREE.Vector3());
+        gltf.scene.position.sub(center);
+        gltf.scene.position.y += size.y * 0.5;
+
+        const focusY = Math.max(size.y * 0.45, 0.6);
+        controls.target.set(0, focusY, 0);
+        controls.update();
+
+        const maxDim = Math.max(size.x, size.y, size.z, 0.6);
+        const fov = camera.fov * (Math.PI / 180);
+        const cameraDistance = maxDim / Math.tan(fov / 2) + 0.2;
+        camera.position.set(0.2, focusY + size.y * 0.15, cameraDistance);
+        camera.lookAt(controls.target);
+
+        const nodeLookup = new Map();
         gltf.scene.traverse((obj) => {
-          jointConfigs.forEach((cfg) => {
-            if (!jointState.has(cfg.name) && obj.name === cfg.name) {
-              jointState.set(cfg.name, {
-                object: obj,
-                initial: obj.quaternion.clone(),
-                axis: cfg.axis.clone().normalize(),
-                amplitude: cfg.amplitude,
-                phase: cfg.phase,
-                offset: cfg.offset || 0.0
-              });
-            }
-          });
+          if (obj.name) {
+            const list = nodeLookup.get(obj.name) || [];
+            list.push(obj);
+            nodeLookup.set(obj.name, list);
+          }
         });
-        console.log('NAO joints registered:', Array.from(jointState.keys()));
+
+        jointConfigs.forEach((cfg) => {
+          const nodes = nodeLookup.get(cfg.name);
+          if (!nodes || !nodes.length) return;
+          const controller = createController(nodes[0], cfg.axis);
+          if (!controller) return;
+      jointState.set(cfg.name, {
+        controller,
+        amplitude: cfg.amplitude || 0,
+        phase: cfg.phase || 0,
+        speed: cfg.speed || 1,
+        offset: cfg.offset || 0,
+        baseOffset: cfg.baseOffset || 0,
+        clampPositive: cfg.clampPositive || false,
+        invertClamp: cfg.invertClamp || false,
+        invert: cfg.invert || false
+      });
+        });
+
+        console.log('NAO loaded. Joint controllers:', Array.from(jointState.keys()));
       },
       undefined,
-      (error) => {
-        console.error('Failed to load nao.glb', error);
-      }
+      (err) => console.error('Failed to load nao.glb', err)
     );
 
-    function updateJoints(t) {
-      jointState.forEach((state) => {
-        const angle = Math.sin(t * 1.6 + state.phase) * state.amplitude + state.offset;
-        state.object.quaternion.copy(state.initial);
-        const delta = new THREE.Quaternion().setFromAxisAngle(state.axis, angle);
-        state.object.quaternion.multiply(delta);
+    function updateJoints(time) {
+      jointState.forEach((state, name) => {
+        let angle = Math.sin(time * state.speed + state.phase) * state.amplitude + state.offset;
+        if (state.baseOffset) {
+          angle = state.baseOffset + angle;
+        }
+        if (state.invert) {
+          angle = -angle;
+        }
+        if (state.clampPositive) {
+          if (state.invertClamp) {
+            angle = Math.min(0, angle);
+          } else {
+            angle = Math.max(0, angle);
+          }
+        }
+        applyController(state.controller, angle);
       });
     }
 
@@ -133,6 +207,7 @@
       requestAnimationFrame(animate);
       const elapsed = clock.getElapsedTime();
       updateJoints(elapsed);
+      controls.update();
       renderer.render(scene, camera);
     }
 

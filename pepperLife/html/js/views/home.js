@@ -1,4 +1,5 @@
-import { RobotVirtuel } from '../robotVirtuel.js';
+import { RobotVirtuelPepper } from '../robotVirtuelPepper.js';
+import { RobotVirtuelNao } from '../robotVirtuelNao.js';
 
 // API pour le lanceur lui-même (servi sur le même port que la page, 8080)
 const launcherApi = {
@@ -346,7 +347,7 @@ const template = `
     </div>
 
     <div class="card robot-info-card">
-      <div class="title">Robot</div>
+    <div class="title" id="robot-card-title">Robot</div>
       <div class="content-grid">
         <div class="status-params">
           <div class="status-item"><span class="label">Version</span><span id="info-version" class="value">—</span></div>
@@ -410,6 +411,56 @@ let lastRenderedLogs = [];
 let versionCheckDone = false; // Flag to ensure version check runs only once
 let versionStatusText = ''; // Persist version status indicator
 let robotVirtuelInstance = null;
+let robotVirtuelKind = null;
+let lastKnownRobotType = 'pepper';
+function formatRobotName(value) {
+  const text = typeof value === 'string' ? value.trim() : '';
+  if (!text) return null;
+  return text.slice(0, 1).toUpperCase() + text.slice(1).toLowerCase();
+}
+function setRobotCardTitle(label) {
+  const el = document.getElementById('robot-card-title');
+  if (!el) return;
+  el.textContent = label || 'Robot';
+}
+
+function normalizeRobotType(value) {
+  if (!value) return 'pepper';
+  if (typeof value === 'string') {
+    const lower = value.toLowerCase();
+    if (lower.includes('nao')) {
+      return 'nao';
+    }
+    if (lower.includes('pepper')) {
+      return 'pepper';
+    }
+    return lower || 'pepper';
+  }
+  return 'pepper';
+}
+
+function ensureRobotVirtuel(targetType) {
+  const normalized = normalizeRobotType(targetType || lastKnownRobotType);
+  if (robotVirtuelInstance && robotVirtuelKind === normalized) {
+    return robotVirtuelInstance;
+  }
+  if (robotVirtuelInstance) {
+    try {
+      robotVirtuelInstance.dispose();
+    } catch (err) {
+      console.warn('[RobotVirtuel] dispose error', err);
+    }
+    robotVirtuelInstance = null;
+  }
+  const ctor = normalized === 'nao' ? RobotVirtuelNao : RobotVirtuelPepper;
+  robotVirtuelInstance = new ctor({ container: '#robot-virtuel' });
+  robotVirtuelKind = normalized;
+  lastKnownRobotType = normalized;
+  robotVirtuelInstance.init().catch((err) => {
+    console.error('[RobotVirtuel] init error', err);
+  });
+  return robotVirtuelInstance;
+}
 let jointPoller = null;
 let jointFetchInFlight = false;
 let jointPollErrorCount = 0;
@@ -536,6 +587,18 @@ function updateRobotStatus(status, data = null) {
   const ipEl = document.getElementById('info-ip');
   const internetEl = document.getElementById('info-internet');
   const versionEl = document.getElementById('info-version');
+  if (data && data.robot_type) {
+    lastKnownRobotType = normalizeRobotType(data.robot_type);
+  }
+  ensureRobotVirtuel(lastKnownRobotType);
+  if (status === 'error' || !data) {
+    setRobotCardTitle('Robot');
+  } else {
+    const fallbackTypeName = formatRobotName(data.robot_type || lastKnownRobotType);
+    const robotName = data.robot_name || (data.system && data.system.robot ? data.system.robot : null);
+    const displayName = robotName ? robotName : fallbackTypeName;
+    setRobotCardTitle(displayName || 'Robot');
+  }
 
   if (status === 'error' || !data) {
     const errorVal = status === 'error' ? 'Erreur' : '—';
@@ -621,6 +684,10 @@ async function checkLauncherStatus(api) {
 
   try {
     const status = await launcherApi.getStatus();
+    if (status && status.robot_type) {
+      lastKnownRobotType = normalizeRobotType(status.robot_type);
+      ensureRobotVirtuel(lastKnownRobotType);
+    }
 
     if (status.python_runner_installed) {
       pythonRunnerStatus.innerHTML = '<div class="status-dot" style="background-color: #22c55e;"></div> <div>Lanceur Python 3 : OK</div>';
@@ -978,9 +1045,7 @@ function pollUntilStopped(api) {
 }
 
 export function init(api) {
-  robotVirtuelInstance = new RobotVirtuel({ container: '#robot-virtuel' });
-  robotVirtuelInstance.init();
-
+  ensureRobotVirtuel(lastKnownRobotType);
   const startBtn = document.getElementById('start-btn');
   const stopBtn = document.getElementById('stop-btn');
   const restartServiceBtn = document.getElementById('restart-service-btn');
@@ -1283,4 +1348,5 @@ export function cleanup() {
     robotVirtuelInstance.dispose();
     robotVirtuelInstance = null;
   }
+  robotVirtuelKind = null;
 }

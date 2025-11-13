@@ -21,6 +21,19 @@ import time
 import sys
 import signal
 import io
+import re
+
+
+BIN_DIR = os.path.dirname(os.path.abspath(__file__))
+PACKAGE_DIR = os.path.dirname(BIN_DIR)
+REPO_ROOT = os.path.dirname(PACKAGE_DIR)
+if REPO_ROOT and REPO_ROOT not in sys.path:
+    sys.path.insert(0, REPO_ROOT)
+
+try:
+    from pepperLife.services.classSystem import RobotIdentityManager
+except Exception:
+    RobotIdentityManager = None
 
 try:
     from urllib.parse import urlparse
@@ -57,7 +70,16 @@ class LauncherService:
         self.autostart_enabled = False
         self.autostart_has_run = False
         self._config_paths = self._compute_config_paths()
+        self._svc_lock = threading.RLock()
+        self.identity_manager = RobotIdentityManager(self._svc, self._identity_log) if RobotIdentityManager else None
         self.refresh_autostart_flag()
+        self.robot_identity = self.identity_manager.get_identity() if self.identity_manager else {'type': 'pepper'}
+        self._naoqi_version = None
+        self._naoqi_version_tuple = None
+        self._autostart_stop = threading.Event()
+        self._autostart_thread = threading.Thread(target=self._autostart_worker, name="PepperLifeAutostart")
+        self._autostart_thread.daemon = True
+        self._autostart_thread.start()
 
     def _read_pipe(self, pipe):
         try:
@@ -72,15 +94,59 @@ class LauncherService:
         runner_path = '/home/nao/.local/share/PackageManager/apps/python3nao/bin/runpy3.sh'
         return os.path.exists(runner_path)
 
+    def _parse_version_tuple(self, version):
+        if not version:
+            return None
+        parts = []
+        for token in str(version).split('.'):
+            match = re.match(r'(\d+)', token)
+            if not match:
+                continue
+            parts.append(int(match.group(1)))
+            if len(parts) >= 3:
+                break
+        return tuple(parts) if parts else None
+
+    def _get_naoqi_version(self, refresh=False):
+        if not refresh and self._naoqi_version:
+            return self._naoqi_version
+        if not self.session:
+            return None
+        try:
+            system_service = self.session.service("ALSystem")
+            if not system_service:
+                return None
+            version = system_service.systemVersion()
+            if version:
+                self._naoqi_version = version
+                self._naoqi_version_tuple = self._parse_version_tuple(version)
+            return self._naoqi_version
+        except Exception as e:
+            self.logger.debug("Impossible de récupérer la version de NAOqi: %s", e)
+            return None
+
+    def _is_naoqi_29_or_newer(self):
+        version_tuple = self._naoqi_version_tuple
+        if not version_tuple:
+            version = self._get_naoqi_version()
+            version_tuple = self._naoqi_version_tuple if version else None
+        if not version_tuple:
+            return False
+        major = version_tuple[0] if len(version_tuple) > 0 else 0
+        minor = version_tuple[1] if len(version_tuple) > 1 else 0
+        if major > 2:
+            return True
+        if major == 2 and minor >= 9:
+            return True
+        return False
+
     def _get_runner_path(self):
         """Retourne le chemin correct du runpy3.sh en fonction de la version de NAOqi."""
         default_runner_path = '/home/nao/.local/share/PackageManager/apps/python3nao/bin/runpy3.sh'
-        try:
-            system_service = self.session.service("ALSystem")
-            naoqi_version = system_service.systemVersion()
+        naoqi_version = self._get_naoqi_version()
+        if naoqi_version:
             self.logger.info("Version de NAOqi détectée: {}".format(naoqi_version))
-
-            if "2.5" in naoqi_version:
+            if naoqi_version.startswith("2.5"):
                 self.logger.info("NAOqi 2.5 détecté. Utilisation du lanceur local.")
                 local_runner_path = '/home/nao/.local/share/PackageManager/apps/pepperlife/bin/runpy3.sh'
                 if os.path.exists(local_runner_path):
@@ -89,8 +155,8 @@ class LauncherService:
                     self.logger.warning("Le lanceur local pour NAOqi 2.5 est introuvable. Utilisation du lanceur par défaut.")
             else:
                 self.logger.info("Utilisation du lanceur par défaut pour NAOqi 2.9+.")
-        except Exception as e:
-            self.logger.error("Impossible de récupérer la version de NAOqi: {}. Utilisation du lanceur par défaut.".format(e))
+        else:
+            self.logger.error("Impossible de récupérer la version de NAOqi. Utilisation du lanceur par défaut.")
 
         return default_runner_path
 
@@ -193,27 +259,92 @@ class LauncherService:
     def refresh_autostart_flag(self):
         return self._load_autostart_flag()
 
-    def get_wakeup_boot_status(self):
+    def refresh_robot_identity(self):
+        if not self.identity_manager:
+            return self.robot_identity
+        self.robot_identity = self.identity_manager.refresh_identity()
+        return self.robot_identity
+
+    def get_robot_type(self):
+        if self.identity_manager:
+            return self.identity_manager.get_robot_type()
+        if isinstance(self.robot_identity, dict):
+            value = self.robot_identity.get('type')
+            if isinstance(value, str) and value.strip():
+                return value.strip().lower()
+        return 'pepper'
+
+    # ------------------------------------------------------------------ Helpers
+    def _svc(self, name):
+        if not self.session:
+            return None
         try:
-            al_memory = self.session.service("ALMemory")
-            raw_value = al_memory.getData("ALDiagnosis/ActiveDiagnosisFinished")
+            with self._svc_lock:
+                return self.session.service(name)
+        except Exception as exc:
+            self.logger.debug("Launcher svc(%s) failed: %s", name, exc)
+            return None
+
+    def _identity_log(self, message, level='info', **_):
+        log_fn = getattr(self.logger, level, None)
+        if callable(log_fn):
+            log_fn(message)
+        else:
+            self.logger.info(message)
+
+    def get_wakeup_boot_status(self):
+        if self._is_naoqi_29_or_newer():
+            try:
+                life_starter = self.session.service("LifeStarter")
+                if not life_starter:
+                    raise RuntimeError("LifeStarter non disponible")
+                allow = life_starter.getAllowToStartLife()
+                if allow is None:
+                    return "RUN"
+                return "OK" if bool(allow) else "RUN"
+            except Exception as exc:
+                self.logger.debug("LifeStarter.getAllowToStartLife indisponible: %s", exc)
+                # Fallback ALMotion ci-dessous
+        try:
+            motion = self.session.service("ALMotion")
+            if not motion:
+                raise RuntimeError("ALMotion non disponible")
+            is_awake = motion.robotIsWakeUp()
         except Exception as exc:
             self.logger.debug("WakeUp status unavailable: %s", exc)
             return "UNKNOWN"
-        if isinstance(raw_value, (bytes, bytearray)):
-            try:
-                raw_value = raw_value.decode("utf-8", "ignore")
-            except Exception:
-                raw_value = str(raw_value)
-        if raw_value is None:
+        if is_awake is None:
             return "RUN"
-        if isinstance(raw_value, text_type):
-            normalized = raw_value.strip().lower()
-            if normalized == "wakeup":
-                return "OK"
-            if not normalized:
-                return "RUN"
-        return "UNKNOWN"
+        return "OK" if bool(is_awake) else "RUN"
+
+    def _autostart_worker(self):
+        """Surveille l'état du robot pour déclencher le lancement sans interface."""
+        interval = 5.0
+        wait = self._autostart_stop.wait
+        while not self._autostart_stop.is_set():
+            try:
+                self.refresh_autostart_flag()
+                if not self.autostart_enabled:
+                    pass
+                elif self.is_running() or self.autostart_has_run:
+                    pass
+                elif self.service_status != 'OK':
+                    pass
+                else:
+                    wakeup_state = self.get_wakeup_boot_status()
+                    if wakeup_state == 'OK':
+                        self.logger.info("[Autostart] Conditions remplies (service OK, wakeup OK). Lancement de pepperLife.py")
+                        result = self.launch()
+                        if result:
+                            self.logger.info("[Autostart] Lancement automatique déclenché.")
+                        else:
+                            self.logger.warning("[Autostart] Lancement automatique échoué, nouvel essai ultérieur.")
+                    else:
+                        self.logger.debug("[Autostart] WakeUp non prêt (%s).", wakeup_state)
+            except Exception as exc:
+                self.logger.debug("[Autostart] Boucle interrompue: %s", exc)
+            finally:
+                wait(interval)
 
     def restart_robot(self):
         try:
@@ -352,6 +483,11 @@ class WebHandler(SimpleHTTPRequestHandler):
         if path == '/api/launcher/status':
             autostart_flag = self.launcher.refresh_autostart_flag()
             wakeup_state = self.launcher.get_wakeup_boot_status()
+            if hasattr(self.launcher, 'refresh_robot_identity'):
+                try:
+                    self.launcher.refresh_robot_identity()
+                except Exception:
+                    pass
             status = {
                 'is_running': self.launcher.is_running(),
                 'python_runner_installed': self.launcher.is_python_runner_installed(),
@@ -359,6 +495,7 @@ class WebHandler(SimpleHTTPRequestHandler):
                 'wakeup_boot': wakeup_state,
                 'autostart_pepperlife': autostart_flag,
                 'autostart_has_run': getattr(self.launcher, 'autostart_has_run', False),
+                'robot_type': self.launcher.get_robot_type() if hasattr(self.launcher, 'get_robot_type') else 'pepper',
             }
             self._json_response(200, status)
         elif path == '/api/launcher/logs':
