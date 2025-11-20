@@ -31,6 +31,9 @@ class ChoreographyCoordinator(object):
         self._program_queue = []
         self._robots = {}
         self._selected_robot_ids = set()
+        self._waiting_preparation_handler = None
+        self._waiting_cleanup_handler = None
+        self._waiting_prepared = False
         self._status = 'idle'
         self._last_action = None
         self._mqtt_config = {}
@@ -114,6 +117,7 @@ class ChoreographyCoordinator(object):
     def add_program(self, name, nature='animation', source='apps'):
         if not name:
             raise ValueError("Le nom du programme est obligatoire.")
+        self._ensure_waiting_prepared()
         program = {
             'id': str(uuid.uuid4()),
             'name': name,
@@ -123,6 +127,7 @@ class ChoreographyCoordinator(object):
         }
         with self._lock:
             self._program_queue.append(program)
+        self._preload_behavior(program)
         return program
 
     def remove_program(self, program_id):
@@ -131,11 +136,16 @@ class ChoreographyCoordinator(object):
         with self._lock:
             before = len(self._program_queue)
             self._program_queue = [p for p in self._program_queue if p.get('id') != program_id]
-            return len(self._program_queue) < before
+            removed = len(self._program_queue) < before
+            should_cleanup = removed and not self._program_queue
+        if should_cleanup:
+            self._handle_waiting_cleanup()
+        return removed
 
     def reset_programs(self):
         with self._lock:
             self._program_queue = []
+        self._handle_waiting_cleanup()
 
     def reset_remote_robots(self):
         with self._lock:
@@ -160,6 +170,93 @@ class ChoreographyCoordinator(object):
         if provider and not callable(provider):
             raise ValueError("Service provider must be callable.")
         self._service_provider = provider
+
+    def set_waiting_preparation_handler(self, handler):
+        if handler and not callable(handler):
+            raise ValueError("Waiting preparation handler must be callable.")
+        self._waiting_preparation_handler = handler
+
+    def set_waiting_cleanup_handler(self, handler):
+        if handler and not callable(handler):
+            raise ValueError("Waiting cleanup handler must be callable.")
+        self._waiting_cleanup_handler = handler
+
+    def _ensure_waiting_prepared(self):
+        with self._lock:
+            if self._waiting_prepared:
+                return
+            self._waiting_prepared = True
+        handler = self._waiting_preparation_handler or self._default_waiting_preparation
+        try:
+            handler()
+        except Exception:
+            with self._lock:
+                self._waiting_prepared = False
+            raise
+
+    def _handle_waiting_cleanup(self):
+        with self._lock:
+            if not self._waiting_prepared:
+                return
+            self._waiting_prepared = False
+        handler = self._waiting_cleanup_handler or self._default_waiting_cleanup
+        if handler:
+            handler()
+
+    def _default_waiting_preparation(self):
+        """Fallback quand aucun handler n'est fourni: stop ALDialog + coupe les habilités."""
+        provider = self._service_provider
+        if not provider:
+            return
+        try:
+            al_dialog = provider('ALDialog')
+            if al_dialog:
+                stop = getattr(al_dialog, 'stopDialog', None) or getattr(al_dialog, 'stop', None)
+                if stop:
+                    try:
+                        stop()
+                    except TypeError:
+                        stop(1)
+        except Exception:
+            pass
+        try:
+            autolife = provider('ALAutonomousLife')
+            if autolife:
+                autolife.setAutonomousAbilityEnabled("All", False)
+        except Exception:
+            pass
+
+    def _default_waiting_cleanup(self):
+        provider = self._service_provider
+        if not provider:
+            return
+        try:
+            autolife = provider('ALAutonomousLife')
+            if autolife:
+                autolife.setAutonomousAbilityEnabled("All", True)
+        except Exception:
+            pass
+
+    def _preload_behavior(self, program):
+        provider = self._service_provider
+        name = (program or {}).get('name')
+        if not provider or not name:
+            return
+        try:
+            bm = provider('ALBehaviorManager')
+        except Exception as exc:
+            self._logger("[Choreo] Impossible de charger ALBehaviorManager pour %s: %s" % (name, exc), level='warning')
+            return
+        if not bm:
+            return
+        preload = getattr(bm, 'preloadBehavior', None)
+        if not preload:
+            return
+        try:
+            preload(name)
+            self._logger("[Choreo] Préchargement du comportement %s prêt." % name, level='debug')
+        except Exception as exc:
+            self._logger("[Choreo] Préchargement impossible pour %s: %s" % (name, exc), level='warning')
 
     # -------------------------------------------------------------------- MQTT
     def update_from_config(self, mqtt_config):
@@ -422,15 +519,18 @@ class ChoreographyCoordinator(object):
         event = data.get('event')
         if event != 'start':
             return
+        self._mark_start(data, origin=data.get('origin'))
+        self._execute_command(data)
+
+    def _mark_start(self, payload, origin=None):
         with self._lock:
             self._status = 'running'
             self._last_action = {
                 'type': 'start',
-                'payload': data,
-                'at': data.get('timestamp') or time.time(),
-                'origin': data.get('origin')
+                'payload': payload,
+                'at': payload.get('timestamp') or time.time(),
+                'origin': origin or self._self_robot_id or 'local'
             }
-        self._execute_command(data)
 
     # ------------------------------------------------------------------- State
     def get_state(self):
@@ -485,16 +585,15 @@ class ChoreographyCoordinator(object):
                 'timestamp': time.time(),
                 'metadata': metadata or {}
             }
-            self._status = 'running'
-            self._last_action = {
-                'type': 'start',
-                'payload': payload,
-                'at': payload['timestamp'],
-                'origin': self._self_robot_id
-            }
         self._logger("[Choreo] Déclenchement multi-robots: %s" % payload, level='info')
+        mqtt_ready = bool(self._mqtt_connected and self._mqtt_topics.get('commands'))
         self._broadcast_command(payload)
-        self._execute_command(payload)
+        if not mqtt_ready:
+            self._logger("[Choreo] MQTT indisponible, exécution locale immédiate.", level='warning')
+            self._mark_start(payload, origin=self._self_robot_id or 'local')
+            self._execute_command(payload)
+        else:
+            self._logger("[Choreo] En attente du push MQTT pour l'exécution locale.", level='info')
         return payload
 
     def _broadcast_command(self, payload):

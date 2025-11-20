@@ -50,7 +50,9 @@ class classTablet(object):
 
         self.al_memory = None
         self.heartbeat_key = "webview/alive"
-        
+        self._tablet_ready_logged = False
+        self._tablet_warned_once = False
+
         # Le WebServer gère son propre thread, on n'a plus besoin de http_thread ici
 
         self.keep_showing = False
@@ -61,14 +63,10 @@ class classTablet(object):
         self._last_hb_local = 0.0  # epoch seconds
         self._last_show_ts = 0.0   # dernier show() effectif
 
-        # Récupère ALTabletService si possible
-        try:
-            if self.session:
-                self.tablet = self.session.service("ALTabletService")
-                self.al_memory = self.session.service("ALMemory")
-                self.al_memory.insertData(self.heartbeat_key, 0.0)
-        except Exception as e:
-            self._log("[Tablet] ALTabletService indisponible: %s" % e)
+        # Récupère ALTabletService si possible (log uniquement si trouvé)
+        if not self._ensure_tablet_service() and not self._tablet_warned_once:
+            self._log("[Tablet] ALTabletService indisponible; tentative de reconnexion périodique.", level='warning')
+            self._tablet_warned_once = True
 
         # Clean à la sortie du process
         atexit.register(self.stop)
@@ -83,9 +81,9 @@ class classTablet(object):
         httpd = self.web_server.start(host='0.0.0.0', port=self.port)
         self.port = httpd.server_address[1]
 
-        if self.tablet:
-            self.tablet.wakeUp()
-            self.tablet.turnScreenOn(True)
+        if not self._ensure_tablet_service() and not self._tablet_warned_once:
+            self._log("[Tablet] ALTabletService indisponible; tentative de reconnexion périodique.", level='warning')
+            self._tablet_warned_once = True
         if show:
             self.keep_showing = True
             self.show_thread = threading.Thread(target=self._keep_showing_loop)
@@ -94,20 +92,22 @@ class classTablet(object):
         return self.get_url()
 
 
-    def show(self, url=None):
+    def show(self, url=None, _skip_resolve=False):
         """Affiche l'URL sur la tablette (webview)."""
+        if not _skip_resolve and not self._ensure_tablet_service():
+            return
         if not self.tablet:
-            self._log("[Tablet] Pas de tablette; UI visible sur %s" % self.get_url(), level='debug')
             return
         try:
-            self.tablet.showWebview(url or self.get_url(from_tablet=True))
-            self._log("[Tablet] Webview affichée: %s" % (url or self.get_url(from_tablet=True)))
+            resolved_url = url or self.get_url(from_tablet=True)
+            self.tablet.showWebview(resolved_url)
+            self._log("[Tablet] Webview affichée: %s" % resolved_url, level='debug')
         except Exception as e:
             self._log("[Tablet] Échec showWebview: %s" % e)
 
     def hide(self):
         """Cache la webview sur la tablette, si présente."""
-        if not self.tablet:
+        if not self._ensure_tablet_service():
             return
         try:
             self.tablet.hideWebview()
@@ -144,7 +144,7 @@ class classTablet(object):
                 self._log("[Tablet] Failed to write last_capture.png: %s" % e, level='error')
 
     def show_last_capture_on_tablet(self):
-        if not self.tablet:
+        if not self._ensure_tablet_service():
             return
         try:
             self.tablet.executeJS("show_last_capture()")
@@ -152,7 +152,7 @@ class classTablet(object):
             self._log("[Tablet] Échec executeJS(show_last_capture): %s" % e)
 
     def show_video_feed(self):
-        if not self.tablet:
+        if not self._ensure_tablet_service():
             return
         try:
             self.tablet.executeJS("startPngPolling()")
@@ -184,6 +184,10 @@ class classTablet(object):
         min_show_interval = 90.0   # ne jamais réafficher plus souvent que toutes les 90s
         while self.keep_showing:
             try:
+                self._ensure_tablet_service()
+                if not self.tablet:
+                    self.stop_event.wait(10)
+                    continue
                 now = time.time()
                 last_hb_mem = None
                 if self.al_memory:
@@ -212,6 +216,44 @@ class classTablet(object):
             self.stop_event.wait(10)  # Vérification toutes les 10s
 
     # ---------- Internes ----------
+    def _ensure_tablet_service(self):
+        if self.tablet:
+            return True
+        if not self.session:
+            return False
+        try:
+            tablet = self.session.service("ALTabletService")
+        except Exception:
+            return False
+        self.tablet = tablet
+        try:
+            self.al_memory = self.session.service("ALMemory")
+            if self.al_memory:
+                self.al_memory.insertData(self.heartbeat_key, float(self._last_hb_local or 0.0))
+        except Exception:
+            self.al_memory = None
+        self._handle_tablet_ready()
+        return True
+
+    def _handle_tablet_ready(self):
+        if not self.tablet:
+            return
+        if not self._tablet_ready_logged:
+            self._log("[Tablet] ALTabletService détecté, activation de la webview.")
+            self._tablet_ready_logged = True
+        self._tablet_warned_once = False
+        try:
+            self.tablet.wakeUp()
+            self.tablet.turnScreenOn(True)
+        except Exception as e:
+            self._log("[Tablet] Impossible d'initialiser la tablette: %s" % e, level='warning')
+        if self.keep_showing:
+            try:
+                self.show(_skip_resolve=True)
+                self._last_show_ts = time.time()
+            except Exception as e:
+                self._log("[Tablet] Impossible d'afficher la webview après connexion: %s" % e, level='warning')
+
     def _resolve_version(self, default_text):
         """Ordre: provider() -> fichier -> texte fourni -> 'dev'."""
         v = self._get_version_from_provider()

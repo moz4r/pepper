@@ -107,17 +107,20 @@ class PepperLifeService(object):
     def _connect(self):
         # Détection de la version (une seule fois)
         if self._system is None:
+            env_version = os.environ.get('PEPPER_NAOQI_VERSION')
+            env_flag = os.environ.get('PEPPER_NAOQI_IS29')
+            if env_version:
+                self.naoqi_version = env_version
+                self.is_29 = (env_flag == '1')
+                self.logger.info("Version NAOqi fournie par le lanceur: {} (>=2.9: {})".format(self.naoqi_version, self.is_29))
+            else:
+                self.naoqi_version = 'unknown'
+                self.is_29 = False
+                self.logger.warning("Version NAOqi non fournie par le lanceur, fallback < 2.9.")
             try:
                 self._system = self.session.service("ALSystem")
-                self.naoqi_version = self._system.systemVersion()
-                version_parts = self.naoqi_version.split('.')
-                major = int(version_parts[0])
-                minor = int(version_parts[1])
-                self.is_29 = (major == 2 and minor >= 9) or major > 2
-                self.logger.info("Version NAOqi détectée: {}. Utilisation des méthodes pour 2.9+: {}".format(self.naoqi_version, self.is_29))
-            except Exception as e:
-                self.logger.error("Impossible de détecter la version de NAOqi, suppose < 2.9. Erreur: {}".format(e))
-                self.is_29 = False # Fallback
+            except Exception:
+                self._system = None
 
         # Connexion aux services communs
         if self._as is None: self._as = self.session.service("ALAnimatedSpeech")

@@ -2,6 +2,7 @@
 # classListener.py — Wrapper ALAudioDevice (pré-roll + WAV mémoire)
 
 import time, io, wave, random, threading
+from collections import deque
 from .classAudioUtils import agc, trim_tail_silence
 
 def _list_audio_clients(ad):
@@ -56,9 +57,11 @@ class Listener(object):
         self.anim_subscriber_id = self.anim_subscriber.signal.connect(self.on_tts_status)
         self.tts_subscriber_id = self.tts_subscriber.signal.connect(self.on_tts_status)
 
-        self.mon, self.pre, self.rec = [], [], []
-        self.on = False # This is for recording state
         self.maxpre = self.preroll_chunks
+        self.mon = deque(maxlen=24)
+        self.pre = deque(maxlen=self.maxpre)
+        self.rec = []
+        self.on = False # This is for recording state
         self.log("[AUDIO] Listener initialized: %s" % self.name, level='info')
 
     def start(self):
@@ -103,12 +106,14 @@ class Listener(object):
         with self.lock:
             if status_string == 'started':
                 self.speaking = True
-                self.mon[:] = []
-                self.pre[:] = []
+                self.mon.clear()
+                self.pre.clear()
             elif status_string == 'done':
                 self.speaking = False
                 self.speech_stop_time = time.time()
-                self.pre = list(self.mon[-self.maxpre:])
+                snapshot = list(self.mon)[-self.maxpre:]
+                self.pre.clear()
+                self.pre.extend(snapshot)
 
     def toggle_micro(self):
         self.microEnabled["on"] = not self.microEnabled["on"]
@@ -149,9 +154,8 @@ class Listener(object):
         with self.lock:
             self.mon.append(buf)
             self.pre.append(buf)
-            if len(self.mon) > 24: self.mon = self.mon[-24:]
-            if len(self.pre) > self.maxpre: self.pre = self.pre[-self.maxpre:]
-            if is_recording: self.rec.append(buf)
+            if is_recording:
+                self.rec.append(buf)
 
     def get_last_audio_chunk(self):
         with self.lock:

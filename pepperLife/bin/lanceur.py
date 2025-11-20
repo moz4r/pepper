@@ -31,9 +31,16 @@ if REPO_ROOT and REPO_ROOT not in sys.path:
     sys.path.insert(0, REPO_ROOT)
 
 try:
-    from pepperLife.services.classSystem import RobotIdentityManager
+    from pepperLife.services.classSystem import RobotIdentityManager, read_naoqi_version_from_file
 except Exception:
     RobotIdentityManager = None
+    def read_naoqi_version_from_file(path='/opt/aldebaran/etc/version/naoqi_version'):
+        try:
+            with io.open(path, 'r', encoding='utf-8') as fh:
+                data = fh.read().strip()
+                return data or None
+        except Exception:
+            return None
 
 try:
     from urllib.parse import urlparse
@@ -72,10 +79,10 @@ class LauncherService:
         self._config_paths = self._compute_config_paths()
         self._svc_lock = threading.RLock()
         self.identity_manager = RobotIdentityManager(self._svc, self._identity_log) if RobotIdentityManager else None
-        self.refresh_autostart_flag()
-        self.robot_identity = self.identity_manager.get_identity() if self.identity_manager else {'type': 'pepper'}
         self._naoqi_version = None
         self._naoqi_version_tuple = None
+        self.refresh_autostart_flag()
+        self.robot_identity = self.identity_manager.get_identity() if self.identity_manager else {'type': 'pepper'}
         self._autostart_stop = threading.Event()
         self._autostart_thread = threading.Thread(target=self._autostart_worker, name="PepperLifeAutostart")
         self._autostart_thread.daemon = True
@@ -107,28 +114,23 @@ class LauncherService:
                 break
         return tuple(parts) if parts else None
 
-    def _get_naoqi_version(self, refresh=False):
+    def getVersion(self, refresh=False):
         if not refresh and self._naoqi_version:
             return self._naoqi_version
-        if not self.session:
-            return None
-        try:
-            system_service = self.session.service("ALSystem")
-            if not system_service:
-                return None
-            version = system_service.systemVersion()
-            if version:
-                self._naoqi_version = version
-                self._naoqi_version_tuple = self._parse_version_tuple(version)
+        version = read_naoqi_version_from_file()
+        if version:
+            self._naoqi_version = version
+            self._naoqi_version_tuple = self._parse_version_tuple(version)
             return self._naoqi_version
-        except Exception as e:
-            self.logger.debug("Impossible de récupérer la version de NAOqi: %s", e)
-            return None
+        self._naoqi_version = None
+        self._naoqi_version_tuple = None
+        self.logger.debug("Impossible de lire la version NAOqi depuis le fichier système.")
+        return None
 
-    def _is_naoqi_29_or_newer(self):
+    def is_naoqi_29_or_newer(self):
         version_tuple = self._naoqi_version_tuple
         if not version_tuple:
-            version = self._get_naoqi_version()
+            version = self.getVersion()
             version_tuple = self._naoqi_version_tuple if version else None
         if not version_tuple:
             return False
@@ -143,7 +145,7 @@ class LauncherService:
     def _get_runner_path(self):
         """Retourne le chemin correct du runpy3.sh en fonction de la version de NAOqi."""
         default_runner_path = '/home/nao/.local/share/PackageManager/apps/python3nao/bin/runpy3.sh'
-        naoqi_version = self._get_naoqi_version()
+        naoqi_version = self.getVersion()
         if naoqi_version:
             self.logger.info("Version de NAOqi détectée: {}".format(naoqi_version))
             if naoqi_version.startswith("2.5"):
@@ -159,6 +161,17 @@ class LauncherService:
             self.logger.error("Impossible de récupérer la version de NAOqi. Utilisation du lanceur par défaut.")
 
         return default_runner_path
+
+    def _build_child_env(self):
+        env = os.environ.copy()
+        version = self.getVersion()
+        if version:
+            env['PEPPER_NAOQI_VERSION'] = str(version)
+            env['PEPPER_NAOQI_IS29'] = '1' if self.is_naoqi_29_or_newer() else '0'
+        robot_name = self.get_robot_name() if hasattr(self, 'get_robot_name') else None
+        if robot_name:
+            env['PEPPER_ROBOT_NAME'] = robot_name
+        return env
 
     def _ensure_runner_executable(self, path):
         if not path or not os.path.exists(path):
@@ -192,7 +205,13 @@ class LauncherService:
         command = [runner_path, "-u", script_path]
         try:
             self.logger.info("Lancement de la commande: {}".format(' '.join(command)))
-            self.process = subprocess.Popen(command, stdout=subprocess.PIPE, stderr=subprocess.STDOUT, preexec_fn=os.setsid)
+            self.process = subprocess.Popen(
+                command,
+                stdout=subprocess.PIPE,
+                stderr=subprocess.STDOUT,
+                preexec_fn=os.setsid,
+                env=self._build_child_env()
+            )
             thread = threading.Thread(target=self._read_pipe, args=(self.process.stdout,))
             thread.daemon = True
             thread.start()
@@ -293,7 +312,7 @@ class LauncherService:
             self.logger.info(message)
 
     def get_wakeup_boot_status(self):
-        if self._is_naoqi_29_or_newer():
+        if self.is_naoqi_29_or_newer():
             try:
                 life_starter = self.session.service("LifeStarter")
                 if not life_starter:
@@ -316,6 +335,14 @@ class LauncherService:
         if is_awake is None:
             return "RUN"
         return "OK" if bool(is_awake) else "RUN"
+
+    def get_robot_name(self):
+        if self.identity_manager:
+            try:
+                return self.identity_manager.get_robot_name()
+            except Exception as exc:
+                self.logger.debug("get_robot_name failed: %s", exc)
+        return None
 
     def _autostart_worker(self):
         """Surveille l'état du robot pour déclencher le lancement sans interface."""
@@ -404,7 +431,7 @@ class LauncherService:
         command = [runner_path, service_script_path]
 
         try:
-            subprocess.Popen(command, preexec_fn=os.setsid)
+            subprocess.Popen(command, preexec_fn=os.setsid, env=self._build_child_env())
             self.logger.info("  -> Commande de lancement envoyée. Attente de 3 secondes pour la vérification...")
             time.sleep(3)
 
@@ -496,8 +523,17 @@ class WebHandler(SimpleHTTPRequestHandler):
                 'autostart_pepperlife': autostart_flag,
                 'autostart_has_run': getattr(self.launcher, 'autostart_has_run', False),
                 'robot_type': self.launcher.get_robot_type() if hasattr(self.launcher, 'get_robot_type') else 'pepper',
+                'robot_name': self.launcher.get_robot_name() if hasattr(self.launcher, 'get_robot_name') else None,
+                'naoqi_version': self.launcher.getVersion(),
+                'is_naoqi_29_or_newer': self.launcher.is_naoqi_29_or_newer(),
             }
             self._json_response(200, status)
+        elif path == '/api/launcher/version':
+            payload = {
+                'naoqi_version': self.launcher.getVersion(),
+                'is_naoqi_29_or_newer': self.launcher.is_naoqi_29_or_newer()
+            }
+            self._json_response(200, payload)
         elif path == '/api/launcher/logs':
             raw_logs = self.launcher.get_logs()
             html_logs = [ansi_to_html(log) for log in raw_logs]

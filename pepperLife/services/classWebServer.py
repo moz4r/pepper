@@ -46,7 +46,6 @@ import socket
 import threading
 import subprocess
 import collections
-
 try:
     from urllib.request import Request, urlopen
     from urllib.error import URLError, HTTPError
@@ -81,7 +80,11 @@ except ImportError:
     from SimpleHTTPServer import SimpleHTTPRequestHandler
     from SocketServer import TCPServer, ThreadingMixIn
 
-from .classSystem import version as SysVersion, RobotIdentityManager
+from .classSystem import (
+    version as SysVersion,
+    RobotIdentityManager,
+    read_naoqi_version_from_file,
+)
 from .chatBots.ollama import call_ollama_api, list_models, normalize_base_url
 from .classChoreography import ChoreographyCoordinator
 
@@ -126,23 +129,29 @@ class WebServer(object):
         self.get_detailed_chat_status_callback = None
         self.chat_send_callback = None
         self.config_changed_callback = None
+        self.pause_aldialog_watchdog_callback = None
+        self.resume_aldialog_watchdog_callback = None
         self._behavior_nature_cache = {}
         self._last_installed_behaviors = []
         self._running_behaviors = set()
         self._running_animation_futures = {}
         self._last_heartbeat = 0
         self._httpd = None
+        self._store_status_thread = None
         self._backend_process = None
         self._backend_logs = collections.deque(maxlen=500)
         self._naoqi_lock = threading.RLock()
         self._svc_cache = {}
         self._runtime_config = {}
+        self._store_service_url = os.environ.get('PEPPERSHOP_URL', 'http://127.0.0.1:8090')
         self.identity_manager = RobotIdentityManager(self.svc, self._logger)
         self._last_identity_for_choreo = None
         self.choreography = ChoreographyCoordinator(logger=self._logger)
         try:
             self.choreography.ensure_self_robot(self.get_robot_identity())
             self.choreography.set_service_provider(self.svc)
+            self.choreography.set_waiting_preparation_handler(self._prepare_robot_for_choreo_waiting)
+            self.choreography.set_waiting_cleanup_handler(self._restore_robot_after_queue)
         except Exception:
             pass
 
@@ -174,6 +183,75 @@ class WebServer(object):
             self._last_identity_for_choreo = identity
         except Exception as e:
             self._logger("%s -> choreography update failed: %s" % (source, e), level='warning')
+
+    def set_aldialog_watchdog_controller(self, pause_callback=None, resume_callback=None):
+        if pause_callback and not callable(pause_callback):
+            raise ValueError("pause_callback must be callable")
+        if resume_callback and not callable(resume_callback):
+            raise ValueError("resume_callback must be callable")
+        self.pause_aldialog_watchdog_callback = pause_callback
+        self.resume_aldialog_watchdog_callback = resume_callback
+
+    def _prepare_robot_for_choreo_waiting(self):
+        self._logger("[Choreo] Préparation du robot avant la mise en attente.", level='info')
+        pause_cb = self.pause_aldialog_watchdog_callback
+        if pause_cb:
+            try:
+                pause_cb()
+            except Exception as exc:
+                self._logger("[Choreo] Mise en pause du watchdog ALDialog impossible: %s" % exc, level='warning')
+        stop_chat = getattr(self, 'stop_chat_callback', None)
+        get_status = getattr(self, 'get_chat_status_callback', None)
+        should_stop = True
+        if get_status:
+            try:
+                status = get_status() or {}
+                should_stop = bool(status.get('is_running') or status.get('mode') not in ('basic', None))
+            except Exception as exc:
+                should_stop = True
+                self._logger("[Choreo] Impossible de lire l'état du chatbot: %s" % exc, level='warning')
+        if stop_chat and should_stop:
+            try:
+                stop_chat()
+            except Exception as exc:
+                self._logger("[Choreo] Arrêt du chatbot impossible: %s" % exc, level='warning')
+        al_dialog = self.svc('ALDialog')
+        if al_dialog:
+            try:
+                stop_fn = getattr(al_dialog, 'stopDialog', None) or getattr(al_dialog, 'stop', None)
+                if stop_fn:
+                    try:
+                        stop_fn()
+                    except TypeError:
+                        stop_fn(1)
+            except Exception as exc:
+                self._logger("[Choreo] Impossible d'arrêter ALDialog: %s" % exc, level='warning')
+        autolife = self.svc('ALAutonomousLife')
+        if autolife:
+            try:
+                autolife.setAutonomousAbilityEnabled("All", False)
+            except Exception as exc:
+                self._logger("[Choreo] Impossible de désactiver ALAutonomousLife: %s" % exc, level='warning')
+        if self.speaker:
+            try:
+                self.speaker.say_quick("Ok, je me mets en attente.")
+            except Exception as exc:
+                self._logger("[Choreo] Impossible d'annoncer l'attente: %s" % exc, level='warning')
+
+    def _restore_robot_after_queue(self):
+        self._logger("[Choreo] File vide, restauration de l'environnement ALDialog.", level='info')
+        autolife = self.svc('ALAutonomousLife')
+        if autolife:
+            try:
+                autolife.setAutonomousAbilityEnabled("All", True)
+            except Exception as exc:
+                self._logger("[Choreo] Impossible de réactiver ALAutonomousLife: %s" % exc, level='warning')
+        resume_cb = self.resume_aldialog_watchdog_callback
+        if resume_cb:
+            try:
+                resume_cb()
+            except Exception as exc:
+                self._logger("[Choreo] Reprise du watchdog ALDialog impossible: %s" % exc, level='warning')
 
     def svc(self, name):
         """Récupère un service NAOqi sous verrou, renvoie un proxy verrouillé pour ses méthodes."""
@@ -243,7 +321,71 @@ class WebServer(object):
         th.daemon = True
         th.start()
         self._logger('Serveur Web (multi-thread) démarré sur %s:%s' % (host, port))
+        try:
+            _, actual_port = httpd.server_address
+        except Exception:
+            actual_port = port
+        self._schedule_store_status_probe(actual_port)
         return httpd
+
+    def _store_call(self, method, path, payload=None, timeout=8):
+        base = getattr(self, '_store_service_url', 'http://127.0.0.1:8090') or 'http://127.0.0.1:8090'
+        url = base.rstrip('/') + path
+        headers = {'Accept': 'application/json'}
+        data = None
+        method = (method or 'GET').upper()
+        if method != 'GET':
+            data = json.dumps(payload or {}).encode('utf-8')
+            headers['Content-Type'] = 'application/json'
+        req = Request(url, data=data, headers=headers)
+        if method not in ('GET', 'POST'):
+            req.get_method = lambda: method
+        response = None
+        try:
+            response = urlopen(req, timeout=timeout)
+            status = getattr(response, 'status', getattr(response, 'code', 200))
+            raw = response.read().decode('utf-8', 'ignore')
+            try:
+                parsed = json.loads(raw) if raw else {}
+            except Exception:
+                parsed = {}
+            return parsed, status
+        except HTTPError as e:
+            body = e.read().decode('utf-8', 'ignore')
+            try:
+                parsed = json.loads(body) if body else {}
+            except Exception:
+                parsed = {'error': body or str(e)}
+            return parsed or {'error': str(e)}, getattr(e, 'code', 500)
+        except URLError as e:
+            raise RuntimeError(str(getattr(e, 'reason', e)) or 'Service store injoignable')
+        finally:
+            if response:
+                try:
+                    response.close()
+                except Exception:
+                    pass
+
+    def _sanitize_store_payload(self, payload):
+        blocked_keys = {
+            'server', 'api_base', 'base_url', 'stored_email', 'email', 'account',
+            'username', 'token', 'secret', 'password'
+        }
+        if isinstance(payload, dict):
+            result = {}
+            for key, value in payload.items():
+                if key in blocked_keys:
+                    continue
+                if isinstance(value, dict):
+                    result[key] = self._sanitize_store_payload(value)
+                elif isinstance(value, list):
+                    result[key] = [self._sanitize_store_payload(item) for item in value]
+                else:
+                    result[key] = value
+            return result
+        if isinstance(payload, list):
+            return [self._sanitize_store_payload(item) for item in payload]
+        return payload
 
     def stop(self):
         if self._backend_process:
@@ -277,6 +419,34 @@ class WebServer(object):
                 self.choreography.set_service_provider(self.svc)
             except Exception as e:
                 self._logger("update_runtime_config failed: %s" % e, level='warning')
+
+    def _schedule_store_status_probe(self, port):
+        if self._store_status_thread and self._store_status_thread.is_alive():
+            return
+
+        def _worker():
+            attempts = 3
+            for attempt in range(attempts):
+                if attempt > 0:
+                    time.sleep(1 + attempt)
+                else:
+                    time.sleep(1.0)
+                try:
+                    data, _ = self._store_call('GET', '/api/store/status')
+                    status = data.get('status')
+                    message = data.get('message') or data.get('error') or status or 'réponse inconnue'
+                    if status == 'connected':
+                        self._logger("[WebServer] Connexion store automatique OK.", level='info')
+                    else:
+                        self._logger("[WebServer] Vérification store automatique: %s." % message, level='info')
+                    return
+                except Exception as e:
+                    self._logger("[WebServer] Vérification store automatique échouée (tentative %d/%d): %s" %
+                                 (attempt + 1, attempts, e), level='warning')
+            self._logger("[WebServer] Abandon de la vérification store automatique.", level='warning')
+
+        self._store_status_thread = threading.Thread(target=_worker, name='StoreStatusProbe', daemon=True)
+        self._store_status_thread.start()
 
     def _make_handler(self):
         parent = self
@@ -365,6 +535,21 @@ class WebServer(object):
 
             def _send_503(self, msg):
                 self._json(503, {'error': str(msg)})
+
+            def _store_forward(self, method, endpoint, payload=None):
+                try:
+                    data, status = parent._store_call(method, endpoint, payload)
+                except RuntimeError as e:
+                    message = str(e) or 'Service PepperShop injoignable.'
+                    payload = {
+                        'error': message,
+                        'status': 'agent-offline',
+                        'store_agent_unreachable': True
+                    }
+                    self._json(503, payload)
+                    return
+                sanitized = parent._sanitize_store_payload(data)
+                self._json(status, sanitized)
 
             def _serve_index(self):
                 try:
@@ -467,6 +652,8 @@ class WebServer(object):
                 if path == '/api/settings/get': self._settings_get(); return
                 if path == '/api/config/default': self._config_get_default(); return
                 if path == '/api/config/user': self._config_get_user(); return
+                if path == '/api/store/info': self._store_get_info(); return
+                if path == '/api/store/status': self._store_status(); return
                 if path == '/api/logs/tail':
                     try:
                         n = int(parse_qs(parsed.query or '').get('n', ['200'])[0])
@@ -502,6 +689,13 @@ class WebServer(object):
 
                 # Fichiers statiques
                 if path in ('/cam.png', '/last_capture.png'):
+                    if path == '/cam.png':
+                        try:
+                            vision = getattr(self.server.parent, 'vision_service', None)
+                            if vision and hasattr(vision, 'touch_stream_consumer'):
+                                vision.touch_stream_consumer(auto_start=True)
+                        except Exception:
+                            pass
                     p = os.path.join(self.server._root_dir, path.lstrip('/'))
                     if os.path.isfile(p):
                         try:
@@ -573,6 +767,9 @@ class WebServer(object):
                 if path == '/api/chat/stop': self._chat_stop(); return
                 if path == '/api/chat/send': self._chat_send(payload); return
                 if path == '/api/system_prompt': self._set_system_prompt(payload, parsed); return
+                if path == '/api/store/test_connection': self._store_test_connection(payload); return
+                if path == '/api/store/save': self._store_save_settings(payload); return
+                if path == '/api/store/logout': self._store_logout(); return
                 self._send_503('Unknown POST %s' % path)
 
             def _get_mic_status(self):
@@ -680,6 +877,33 @@ class WebServer(object):
                     'health': payload,
                     'status': status
                 })
+
+            def _store_test_connection(self, payload):
+                payload = payload or {}
+                sanitized = {
+                    'server': payload.get('server'),
+                    'username': (payload.get('username') or '').strip(),
+                    'password': payload.get('password') or ''
+                }
+                self._store_forward('POST', '/api/store/test_connection', sanitized)
+
+            def _store_get_info(self):
+                self._store_forward('GET', '/api/store/info')
+
+            def _store_status(self):
+                self._store_forward('GET', '/api/store/status')
+
+            def _store_save_settings(self, payload):
+                payload = payload or {}
+                sanitized = {
+                    'server': (payload.get('server') or '').strip(),
+                    'email': (payload.get('email') or '').strip(),
+                    'password': payload.get('password') or ''
+                }
+                self._store_forward('POST', '/api/store/save', sanitized)
+
+            def _store_logout(self):
+                self._store_forward('POST', '/api/store/logout')
 
             # ----- Camera -----
             def _camera_status(self):
@@ -843,25 +1067,31 @@ class WebServer(object):
             # ====== NAOqi-backed endpoints ======
             def _get_system_info(self):
                 """GET /api/system/info - Récupère les informations système générales."""
+                initial_version = os.environ.get('PEPPER_NAOQI_VERSION')
+                initial_name = os.environ.get('PEPPER_ROBOT_NAME')
                 info = {'version': getattr(self.server.parent, 'version_text', 'dev'),
                         'robot_type': parent.get_robot_type() if hasattr(parent, 'get_robot_type') else 'pepper',
-                        'robot_name': None,
-                        'naoqi_version': None, 'ip_addresses': [], 'internet_connected': False,
+                        'robot_name': initial_name,
+                        'naoqi_version': initial_version, 'ip_addresses': [], 'internet_connected': False,
                         'battery': {'charge': None, 'plugged': None},
-                        'system': {'version': None, 'robot': None}}
+                        'system': {'version': initial_version, 'robot': initial_name}}
                 try:
-                    custom_name = parent._get_robot_name_from_memory() if hasattr(parent, '_get_robot_name_from_memory') else None
+                    if parent.identity_manager:
+                        custom_name = parent.identity_manager.get_robot_name()
+                    else:
+                        custom_name = None
                 except Exception:
                     custom_name = None
-                try:
-                    al_system = parent.svc('ALSystem')
-                    if al_system:
-                        info['naoqi_version'] = al_system.systemVersion()
-                        fallback_name = getattr(al_system, 'robotName', lambda: None)()
-                        info['robot_name'] = custom_name or fallback_name
-                        info['system']['robot'] = info['robot_name'] or 'N/A'
-                        info['system']['version'] = info['naoqi_version'] or info['system']['version']
-                except Exception: pass
+                if custom_name:
+                    if not info['robot_name']:
+                        info['robot_name'] = custom_name
+                    info['system']['robot'] = info['robot_name'] or custom_name
+                if not info['naoqi_version']:
+                    info['naoqi_version'] = read_naoqi_version_from_file()
+                if not info['system']['version']:
+                    info['system']['version'] = info['naoqi_version']
+                if not info['system']['robot']:
+                    info['system']['robot'] = info['robot_name'] or custom_name or 'N/A'
                 try: info['ip_addresses'] = self._ip_addresses()
                 except Exception: pass
                 try: info['internet_connected'] = self._check_internet()
@@ -964,17 +1194,25 @@ class WebServer(object):
             def _get_hardware_info(self):
                 """GET /api/hardware/info - Récupère un résumé de l'état matériel."""
                 info = {
-                    'system': {'version': 'N/A', 'robot': 'N/A'},
+                    'system': {
+                        'version': os.environ.get('PEPPER_NAOQI_VERSION') or 'N/A',
+                        'robot': os.environ.get('PEPPER_ROBOT_NAME') or 'N/A'
+                    },
                     'battery': {'charge': 'N/A', 'plugged': 'N/A'},
                     'motion': {'awake': 'N/A', 'stiffness': 'N/A'},
                     'audio': {'language': 'N/A'}
                 }
-                try:
-                    sys = parent.svc('ALSystem')
-                    if sys:
-                        info['system']['version'] = sys.systemVersion()
-                        info['system']['robot'] = getattr(sys, 'robotName', lambda: 'N/A')()
-                except Exception: pass
+                if info['system']['version'] in (None, 'N/A'):
+                    file_version = read_naoqi_version_from_file()
+                    if file_version:
+                        info['system']['version'] = file_version
+                if info['system']['robot'] in (None, 'N/A'):
+                    try:
+                        robot_name = parent.identity_manager.get_robot_name() if parent.identity_manager else None
+                    except Exception:
+                        robot_name = None
+                    if robot_name:
+                        info['system']['robot'] = robot_name
                 try:
                     batt = parent.svc('ALBattery')
                     if batt:

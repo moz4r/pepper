@@ -20,6 +20,7 @@
 - **🌐 Interface Web de Contrôle** : Une interface web complète pour gérer le robot, surveiller son état, et configurer ses fonctionnalités.
 - **⚡ Autostart configurable** : Choisissez depuis l’onglet *Chat* quel mode (GPT, Ollama ou aucun) doit se lancer automatiquement avec PepperLife.
 - **🧩 Architecture Modulaire** : Le système est conçu en classes Python normalisées (`classLEDs`, `classAnimation`, etc.) pour une maintenance et une évolution facilitées.
+- **🤝 Chorégraphies synchronisées** : Les robots peuvent partager des programmes et animations via MQTT pour des scénarios multi-Pepper coordonnés.
 - **⚙️ Service Unifié NAOqi** : `pepper_life_service.py` harmonise les API NAOqi 2.5 et 2.9 via un service commun, garantissant une compatibilité multi-firmware.
 
 ---

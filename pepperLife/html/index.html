@@ -39,6 +39,7 @@ const Memory = await import(`./js/views/memory.js${bust}`);
 const Settings = await import(`./js/views/settings.js${bust}`);
 const Tethering = await import(`./js/views/tethering.js${bust}`);
 const Apps = await import(`./js/views/apps.js${bust}`);
+const Store = await import(`./js/views/store.js${bust}`);
 const Life = await import(`./js/views/life.js${bust}`);
 const Camera = await import(`./js/views/camera.js${bust}`);
 const Logs = await import(`./js/views/logs.js${bust}`);
@@ -52,6 +53,7 @@ const routes = {
   '#/settings': Settings,
   '#/tethering': Tethering,
   '#/apps': Apps,
+  '#/store': Store,
   '#/life': Life,
   '#/camera': Camera,
   '#/logs': Logs,
@@ -68,6 +70,7 @@ const navItems = [
   ['Réglages', '#/settings'],
   ['Tethering', '#/tethering'],
   ['Apps', '#/apps'],
+  ['Store', '#/store'],
   ['État', '#/life'],
   ['Caméra', '#/camera'],
   ['Logs', '#/logs'],

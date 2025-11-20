@@ -9,15 +9,48 @@ const API_BASE = (() => {
     return 'http://' + hostname + ':8088';
 })();
 
+function tryParseJson(text) {
+    if (!text) {
+        return null;
+    }
+    try {
+        return JSON.parse(text);
+    } catch (_) {
+        return null;
+    }
+}
+
+async function buildHttpError(response) {
+    const raw = await response.text();
+    let message = raw || `HTTP error ${response.status}`;
+    const payload = tryParseJson(raw);
+    if (payload && typeof payload.error === 'string') {
+        message = payload.error;
+    }
+    const error = new Error(message);
+    error.status = response.status;
+    if (payload) {
+        error.payload = payload;
+        if (payload.store_agent_unreachable) {
+            error.storeAgentUnreachable = true;
+        }
+    }
+    return error;
+}
+
 async function jget(url) {
     const r = await fetch(API_BASE + url, {cache: 'no-store'});
     if (!r.ok) {
-        const errorText = await r.text();
-        throw new Error(errorText || `HTTP error ${r.status}`);
+        throw await buildHttpError(r);
     }
     const data = await r.json();
     if (data.error) {
-        throw new Error(data.error);
+        const err = new Error(data.error);
+        err.payload = data;
+        if (data.store_agent_unreachable) {
+            err.storeAgentUnreachable = true;
+        }
+        throw err;
     }
     return data;
 }
@@ -29,8 +62,7 @@ async function jpost(url, data) {
     });
 
     if (!r.ok) {
-        const errorText = await r.text();
-        throw new Error(errorText || `HTTP error ${r.status}`);
+        throw await buildHttpError(r);
     }
 
     // Vérifier si la réponse est bien du JSON avant de la parser
@@ -212,6 +244,11 @@ export const api = {
   // TTS Language
   getTtsLanguages: () => jget('/api/tts/languages'),
   setTtsLanguage: (lang) => jpost('/api/tts/set_language', { language: lang }),
+  storeGetInfo: () => jget('/api/store/info'),
+  storeStatus: () => jget('/api/store/status'),
+  storeTestConnection: ({server, username, password} = {}) => jpost('/api/store/test_connection', {server, username, password}),
+  storeSave: ({server, email, password} = {}) => jpost('/api/store/save', {server, email, password}),
+  storeLogout: () => jpost('/api/store/logout', {}),
   // Generic getter for new endpoints
   get: (url) => jget(url),
 };

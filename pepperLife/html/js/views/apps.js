@@ -163,7 +163,7 @@ class ChoreographyPanel {
               <select data-role="program-select">
                 <option value="">Choisir une application…</option>
               </select>
-              <button type="button" class="btn" data-role="add-program">Ajouter</button>
+              <button type="button" class="btn" data-role="add-program">Ajouter et se mettre en attente</button>
             </div>
             <div class="hint">La file respecte l'ordre d'ajout.</div>
             <table>

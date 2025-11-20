@@ -3,8 +3,11 @@
 import os
 import io
 import sys
-
+import subprocess
 import logging
+import json
+import ast
+import xml.etree.ElementTree as ET
 
 
 os.environ.pop("OPENAI_LOG", None)  # évite que l'ENV force DEBUG
@@ -28,9 +31,13 @@ class bcolors:
 class version(object):
     _here = os.path.dirname(os.path.abspath(__file__))
     version_path = os.path.join(os.path.dirname(_here), "version")
+    _cached_pkg_version = None
 
     @classmethod
     def get(cls, default=u"dev"):
+        pkg_version = cls._get_package_version()
+        if pkg_version:
+            return pkg_version
         try:
             if os.path.isfile(cls.version_path):
                 with io.open(cls.version_path, "r", encoding="utf-8") as f:
@@ -40,10 +47,58 @@ class version(object):
         return default
 
     @classmethod
+    def _get_package_version(cls):
+        if cls._cached_pkg_version:
+            return cls._cached_pkg_version
+        try:
+            output = subprocess.check_output(
+                ['qicli', 'call', 'PackageManager.getPackage', 'pepperlife'],
+                stderr=subprocess.STDOUT
+            )
+            if isinstance(output, bytes):
+                text = output.decode('utf-8', 'ignore')
+            else:
+                text = output
+            text = (text or '').strip()
+            if not text:
+                return None
+            try:
+                data = ast.literal_eval(text)
+            except Exception:
+                return None
+            if isinstance(data, list):
+                for entry in data:
+                    if isinstance(entry, list) and len(entry) >= 2 and entry[0] == 'version':
+                        value = entry[1]
+                        if isinstance(value, (str, bytes)):
+                            cls._cached_pkg_version = value.decode('utf-8', 'ignore') if isinstance(value, bytes) else value
+                        else:
+                            cls._cached_pkg_version = str(value)
+                        if cls._cached_pkg_version:
+                            cls._cached_pkg_version = cls._cached_pkg_version.strip()
+                        return cls._cached_pkg_version or None
+        except Exception:
+            return None
+        return None
+
+    @classmethod
     def is_python3_nao_installed(cls):
         """Vérifie si le lanceur python3 de NAOqi est présent."""
         runner_path = '/home/nao/.local/share/PackageManager/apps/python3nao/bin/runpy3.sh'
         return os.path.exists(runner_path)
+
+
+NAOQI_VERSION_FILE = '/opt/aldebaran/etc/version/naoqi_version'
+
+
+def read_naoqi_version_from_file(path=NAOQI_VERSION_FILE):
+    """Retourne la version NAOqi en lisant le fichier système dédié."""
+    try:
+        with io.open(path, 'r', encoding='utf-8') as fh:
+            data = fh.read().strip()
+            return data or None
+    except Exception:
+        return None
 
 
 class RobotIdentityManager(object):
@@ -55,6 +110,7 @@ class RobotIdentityManager(object):
         self._identity = None
         self._custom_name = None
         self._last_identity_log = (None, None)
+        self._robot_config = None
 
     def set_identity(self, identity):
         if isinstance(identity, dict):
@@ -76,6 +132,8 @@ class RobotIdentityManager(object):
     def refresh_identity(self):
         """Force une redétection (utilisé quand l'état robot peut changer)."""
         self._identity = None
+        self._robot_config = None
+        self._custom_name = None
         return self.get_identity()
 
     def get_robot_type(self):
@@ -88,6 +146,18 @@ class RobotIdentityManager(object):
             return 'pepper'
         return str(value).strip().lower() or 'pepper'
 
+    def get_robot_name(self):
+        identity = self.get_identity()
+        name = identity.get('name') if isinstance(identity, dict) else None
+        if isinstance(name, str) and name.strip():
+            return name.strip()
+        resolved = self._get_robot_name_from_memory()
+        if resolved:
+            if isinstance(identity, dict):
+                identity['name'] = resolved
+            return resolved
+        return None
+
     # ------------------------------------------------------------------ Internals
     def _svc(self, name):
         getter = self._svc_getter
@@ -98,7 +168,75 @@ class RobotIdentityManager(object):
         except Exception:
             return None
 
+    def _load_robot_config(self, force=False):
+        if self._robot_config is not None and not force:
+            return self._robot_config
+        try:
+            output = subprocess.check_output(
+                ['qicli', 'call', 'ALRobotModel.getConfig'],
+                stderr=subprocess.STDOUT
+            )
+            if isinstance(output, bytes):
+                text = output.decode('utf-8', 'ignore')
+            else:
+                text = output
+            text = (text or '').strip()
+            if not text:
+                self._robot_config = None
+                return None
+            root = ET.fromstring(text)
+        except Exception as exc:
+            self._robot_config = None
+            try:
+                self._logger("[Identity] Lecture de la config robot impossible: %s" % exc, level='debug')
+            except Exception:
+                pass
+            return None
+        config = {}
+        for pref in root.iter():
+            tag = pref.tag.split('}', 1)[-1] if '}' in pref.tag else pref.tag
+            if tag != 'Preference':
+                continue
+            memory_name = pref.attrib.get('memoryName') or pref.attrib.get('name')
+            value = pref.attrib.get('value')
+            if not memory_name or value is None:
+                continue
+            text_value = value.strip() if isinstance(value, str) else str(value).strip()
+            if text_value:
+                config[memory_name] = text_value
+        self._robot_config = config or None
+        return self._robot_config
+
+    def _get_config_entry(self, keys):
+        config = self._load_robot_config()
+        if not config:
+            return (None, None)
+        for key in keys:
+            value = config.get(key)
+            if value is None:
+                continue
+            text_value = value.strip() if isinstance(value, str) else str(value).strip()
+            if text_value:
+                return (key, text_value)
+        return (None, None)
+
+    def _get_config_value(self, keys):
+        _, value = self._get_config_entry(keys)
+        return value
+
     def _detect_robot_identity(self):
+        cfg_key, cfg_value = self._get_config_entry((
+            "RobotConfig/Body/Type",
+            "RobotConfig/Body/Type/Value",
+            "RobotConfig/Head/Type",
+            "RobotConfig/Head/Type/Value",
+            "RobotConfig/Body/Version",
+            "RobotConfig/Head/Version",
+        ))
+        if cfg_value:
+            normalized = self._normalize_robot_type(cfg_value)
+            if normalized:
+                return {'type': normalized, 'raw': cfg_value, 'source': cfg_key or 'ALRobotModel.getConfig'}
         almem = self._svc('ALMemory')
         if not almem:
             return None
@@ -124,6 +262,10 @@ class RobotIdentityManager(object):
     def _get_robot_name_from_memory(self):
         if self._custom_name:
             return self._custom_name
+        env_name = os.environ.get('PEPPER_ROBOT_NAME')
+        if isinstance(env_name, str) and env_name.strip():
+            self._custom_name = env_name.strip()
+            return self._custom_name
         try:
             al_system = self._svc('ALSystem')
             if al_system:
@@ -136,18 +278,31 @@ class RobotIdentityManager(object):
                             return self._custom_name
         except Exception:
             pass
+        name_keys = (
+            "RobotConfig/Body/CustomName",
+            "RobotConfig/Head/CustomName",
+            "RobotConfig/Body/CustomName/Value",
+            "RobotConfig/Head/CustomName/Value",
+            "RobotConfig/Robot/CustomName",
+            "RobotConfig/Robot/CustomName/Value",
+            "RobotConfig/Robot/Name",
+            "RobotConfig/Robot/Name/Value",
+            "Device/SubDeviceList/Body/CustomName/Value",
+            "Device/SubDeviceList/Head/CustomName/Value",
+            "Device/SubDeviceList/Body/DeviceName/Value",
+            "Device/SubDeviceList/Head/DeviceName/Value",
+            "Device/DeviceList/Body/Name",
+            "Device/DeviceList/Head/Name",
+            "ALTextToSpeech/CurrentVoice",
+        )
+        cfg_key, cfg_value = self._get_config_entry(name_keys)
+        if cfg_value:
+            self._custom_name = cfg_value
+            return self._custom_name
         try:
             almem = self._svc('ALMemory')
             if almem:
-                for key in (
-                    "Device/SubDeviceList/Body/CustomName/Value",
-                    "Device/SubDeviceList/Head/CustomName/Value",
-                    "RobotConfig/Body/CustomName",
-                    "RobotConfig/Head/CustomName",
-                    "RobotConfig/Body/CustomName/Value",
-                    "RobotConfig/Head/CustomName/Value",
-                    "ALTextToSpeech/CurrentVoice",
-                ):
+                for key in name_keys:
                     try:
                         value = almem.getData(key)
                     except Exception:
@@ -157,41 +312,55 @@ class RobotIdentityManager(object):
                         return self._custom_name
         except Exception:
             pass
-        return None
-
-    def _get_robot_serial(self):
-        al_system = self._svc('ALSystem')
-        if al_system:
-            for attr in ('getRobotSerial', 'robotSerial'):
-                fn = getattr(al_system, attr, None)
-                if callable(fn):
+        fallback_type_keys = (
+            "RobotConfig/Body/Type",
+            "RobotConfig/Body/Type/Value",
+            "RobotConfig/Head/Type",
+            "RobotConfig/Head/Type/Value",
+        )
+        fallback_type = self._get_config_value(fallback_type_keys)
+        if not fallback_type:
+            almem = self._svc('ALMemory')
+            if almem:
+                for key in fallback_type_keys:
                     try:
-                        value = fn()
+                        value = almem.getData(key)
                     except Exception:
                         continue
                     if value:
-                        serial = str(value)
-                        self._logger("[Choreo] Serial via ALSystem.%s -> %s" % (attr, serial), level='debug')
-                        return serial
-        almem = self._svc('ALMemory')
-        if not almem:
-            return None
+                        fallback_type = value
+                        break
+        if fallback_type:
+            normalized = self._normalize_robot_type(fallback_type)
+            self._custom_name = normalized or str(fallback_type).strip()
+            return self._custom_name
+        return None
+
+    def _get_robot_serial(self):
         head_keys = (
+            "RobotConfig/Head/FullHeadId",
+            "RobotConfig/Head/HeadId",
+            "RobotConfig/Head/HeadID",
+            "RobotConfig/Head/HeadId/Value",
+            "RobotConfig/Head/HeadID/Value",
             "Device/SubDeviceList/Head/HeadId/Value",
             "Device/SubDeviceList/Head/SerialNumber/Value",
             "Device/SubDeviceList/Head/Serial/Value",
             "Device/SubDeviceList/Head/HeadID/Value",
             "Device/SubDeviceList/Head/HeadId/Sensor/Value",
             "Device/SubDeviceList/Head/HeadId/Actuator/Value",
-            "RobotConfig/Head/HeadId",
-            "RobotConfig/Head/HeadID",
-            "RobotConfig/Head/HeadId/Value",
-            "RobotConfig/Head/HeadID/Value",
             "Device/SubDeviceList/Head/ID/Value",
             "Device/DeviceList/Head/ID/Value",
             "Head/ID",
             "Head/ID/Value"
         )
+        cfg_key, cfg_value = self._get_config_entry(head_keys)
+        if cfg_value:
+            self._logger("[Choreo] Serial via RobotConfig key %s -> %s" % (cfg_key, cfg_value), level='debug')
+            return cfg_value
+        almem = self._svc('ALMemory')
+        if not almem:
+            return None
         for key in head_keys:
             try:
                 value = almem.getData(key)

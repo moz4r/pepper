@@ -27,6 +27,14 @@ class Vision(object):
         self.lock = threading.Lock()
         self.ui_dir = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), "html")
         self.cam_png_path = os.path.join(self.ui_dir, "cam.png")
+        self._stream_lock = threading.Lock()
+        vision_cfg = (self.config.get('vision') or {})
+        try:
+            idle_value = float(vision_cfg.get('stream_idle_timeout', 15.0))
+        except Exception:
+            idle_value = 15.0
+        self.stream_idle_timeout = idle_value if idle_value and idle_value > 0 else None
+        self._last_consumer_ts = 0.0
 
     def _normalize_camera_index(self, camera_index):
         """Pepper 2.9 exige un Int32 strict : convertir les entrées texte ou booléennes."""
@@ -54,28 +62,49 @@ class Vision(object):
         self._current_camera_index = self._normalize_camera_index(value)
 
     def _stream_loop(self):
-        while self.is_streaming:
-            try:
-                png_data = self.get_png()
-                if png_data:
-                    try:
-                        temp_path = self.cam_png_path + ".tmp"
-                        with open(temp_path, "wb") as f:
-                            f.write(png_data)
-                        os.rename(temp_path, self.cam_png_path)
-                    except Exception as e:
-                        self.log("[Vision] Error writing cam.png: %s" % e)
+        try:
+            while True:
+                if not self.is_streaming:
+                    break
+                try:
+                    png_data = self.get_png()
+                    if png_data:
+                        try:
+                            temp_path = self.cam_png_path + ".tmp"
+                            with open(temp_path, "wb") as f:
+                                f.write(png_data)
+                            os.rename(temp_path, self.cam_png_path)
+                        except Exception as e:
+                            self.log("[Vision] Error writing cam.png: %s" % e)
+                except Exception as e:
+                    self.log("[Vision] Unhandled error in stream loop: %s" % e, level='error')
+                    time.sleep(1)
+                    continue
+
+                if self.stream_idle_timeout:
+                    idle = time.time() - self._last_consumer_ts
+                    if idle > self.stream_idle_timeout:
+                        self.log("[Vision] No viewer detected for %.1fs, auto-stopping stream." % idle, level='info')
+                        break
+
                 time.sleep(1.0 / self.fps)
-            except Exception as e:
-                self.log("[Vision] Unhandled error in stream loop: %s" % e, level='error')
-                time.sleep(1)
+        finally:
+            with self._stream_lock:
+                self.is_streaming = False
+                self.streaming_thread = None
+            self.stop_camera()
+            self.log("[Vision] Streaming loop terminated.")
 
     def start_streaming(self):
-        if not self.is_streaming:
+        with self._stream_lock:
+            if self.is_streaming:
+                self._last_consumer_ts = time.time()
+                return True
             if not self.start_camera():
                 self.log("[Vision] Cannot start streaming, camera subscription failed.")
                 return False
             self.is_streaming = True
+            self._last_consumer_ts = time.time()
             self.streaming_thread = threading.Thread(target=self._stream_loop)
             self.streaming_thread.daemon = True
             self.streaming_thread.start()
@@ -83,12 +112,27 @@ class Vision(object):
         return True
 
     def stop_streaming(self):
-        if self.is_streaming:
+        thread = None
+        with self._stream_lock:
+            if not self.is_streaming:
+                return True
             self.is_streaming = False
-            if self.streaming_thread:
-                self.streaming_thread.join()
-            self.log("[Vision] Stopped streaming to cam.png")
-            self.stop_camera() # Decrement user count
+            thread = self.streaming_thread
+        if thread:
+            thread.join()
+        with self._stream_lock:
+            self.streaming_thread = None
+        self.log("[Vision] Stopped streaming to cam.png")
+        return True
+
+    def touch_stream_consumer(self, auto_start=False):
+        self._last_consumer_ts = time.time()
+        if auto_start and not self.is_streaming:
+            try:
+                return self.start_streaming()
+            except Exception as e:
+                self.log("[Vision] Auto-start stream failed: %s" % e, level='warning')
+                return False
         return True
 
     def switch_camera(self, camera_index):
@@ -126,10 +170,12 @@ class Vision(object):
 
             # Restart the stream if it was running before
             if was_streaming:
-                self.is_streaming = True
-                self.streaming_thread = threading.Thread(target=self._stream_loop)
-                self.streaming_thread.daemon = True
-                self.streaming_thread.start()
+                with self._stream_lock:
+                    self.is_streaming = True
+                    self._last_consumer_ts = time.time()
+                    self.streaming_thread = threading.Thread(target=self._stream_loop)
+                    self.streaming_thread.daemon = True
+                    self.streaming_thread.start()
                 self.log("[Vision] Resumed streaming after camera switch")
 
         return True
@@ -196,15 +242,23 @@ class Vision(object):
         # and locking here can cause deadlocks if switch_camera holds the lock for too long.
         if not self.cam or not self.sub:
             return (None, None, None)
+        frame_acquired = False
         try:
             f = self.cam.getImageRemote(self.sub)
+            frame_acquired = True
             w, h = int(f[0]), int(f[1])
-            buf = f[6]
+            buf = bytes(f[6]) if f[6] is not None else None
             return (w, h, buf)
         except Exception as e:
             # This error can be spammy if the camera is switching, so log at debug level
             self.log("[Cam] get_frame_rgb error: %s" % e, level='debug')
             return (None, None, None)
+        finally:
+            if frame_acquired:
+                try:
+                    self.cam.releaseImage(self.sub)
+                except Exception as release_err:
+                    self.log("[Cam] releaseImage error: %s" % release_err, level='debug')
 
     def get_png(self):
         """

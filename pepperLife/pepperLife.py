@@ -15,6 +15,14 @@ CONFIG = {
     "log": { "verbosity": 2 }
 }
 
+def _get_env_naoqi_version():
+    version = os.environ.get('PEPPER_NAOQI_VERSION')
+    is_flag = os.environ.get('PEPPER_NAOQI_IS29')
+    if version:
+        is_29 = (is_flag == '1') if is_flag in ('0', '1') else False
+        return version, is_29
+    return None, False
+
 def log(msg, level='info', color=None):
     verbosity_map = {'error': 0, 'warning': 1, 'info': 2, 'debug': 3}
     level_num = verbosity_map.get(level, 2)
@@ -128,8 +136,11 @@ def main():
         app.start()
         s = app.session
         log("[OK] NAOqi", level='info', color=bcolors.OKGREEN)
-        robot_version = s.service("ALSystem").systemVersion()
-        log("Version de NAOqi: {}".format(robot_version), level='info')
+        robot_version, is_29_version = _get_env_naoqi_version()
+        if not robot_version:
+            robot_version = "unknown"
+        log("Version NAOqi (depuis le lanceur): {} (>=2.9: {})".format(
+            robot_version, 'oui' if is_29_version else 'non'), level='info')
 
         # Afficher les stats d'animation
         try:
@@ -150,23 +161,18 @@ def main():
     chat_manager = None
 
     autolife_stop_event = threading.Event()
-    def autolife_watchdog(stop_event, robot_version_str):
+    aldialog_watchdog_pause = threading.Event()
+    def autolife_watchdog(stop_event, is_29_version):
         log("Démarrage du watchdog pour ALAutonomousLife et ALDialog.", level='info')
-        
-        is_29 = False
-        try:
-            version_parts = robot_version_str.split('.')
-            major = int(version_parts[0])
-            minor = int(version_parts[1])
-            is_29 = (major == 2 and minor >= 9) or major > 2
-        except Exception:
-            pass # Garde is_29 à False en cas d'erreur de parsing
 
         try:
             autolife = s.service("ALAutonomousLife")
             last_dialog_restart = 0.0
             last_dialog_stop = 0.0
             while not stop_event.is_set():
+                if aldialog_watchdog_pause.is_set():
+                    stop_event.wait(1.0)
+                    continue
                 try:
                     is_gpt_running = chat_manager.is_running() if chat_manager else False
                     
@@ -208,7 +214,7 @@ def main():
                         log("Watchdog: Impossible de vérifier l'état de ALDialog: {}".format(e), level='debug')
 
                     if is_gpt_running:
-                        if not is_29 and is_dialog_active:
+                        if not is_29_version and is_dialog_active:
                             now = time.time()
                             if now - last_dialog_stop > 15.0:
                                 log("Watchdog: Le chatbot est actif, mais ALDialog semble tourner. Arrêt de ALDialog (uniquement pour < 2.9).", level='warning')
@@ -222,7 +228,7 @@ def main():
                                 remaining = max(0.0, 15.0 - (now - last_dialog_stop))
                                 log("Watchdog: ALDialog encore détecté actif, nouvel essai dans {:.1f}s.".format(remaining), level='debug')
                     else:
-                        if not is_29:
+                        if not is_29_version:
                             if not is_dialog_active:
                                 now = time.time()
                                 if now - last_dialog_restart > 15.0:
@@ -239,12 +245,22 @@ def main():
                                 log("Watchdog: ALDialog est déjà actif (mode < 2.9).", level='debug')
                 except Exception as e:
                     log("Erreur dans le watchdog: {}".format(e), level='error')
-                stop_event.wait(2.0)
+                stop_event.wait(30.0)
         except Exception as e:
             log("Le service ALAutonomousLife n'est pas disponible: {}".format(e), level='error')    
-    watchdog_thread = threading.Thread(target=autolife_watchdog, args=(autolife_stop_event, robot_version))
+    watchdog_thread = threading.Thread(target=autolife_watchdog, args=(autolife_stop_event, is_29_version))
     watchdog_thread.daemon = True
     watchdog_thread.start()
+
+    def pause_aldialog_watchdog():
+        if not aldialog_watchdog_pause.is_set():
+            aldialog_watchdog_pause.set()
+            log("Watchdog ALDialog mis en pause pour la chorégraphie.", level='info')
+
+    def resume_aldialog_watchdog():
+        if aldialog_watchdog_pause.is_set():
+            aldialog_watchdog_pause.clear()
+            log("Watchdog ALDialog réactivé.", level='info')
 
     leds = PepperLEDs(s, _logger)
     cap = Listener(s, CONFIG['audio'], _logger)
@@ -347,6 +363,13 @@ def main():
         chat_send_callback=chat_manager.send_debug_prompt,
         config_changed_callback=on_config_changed
     )
+    try:
+        _tablet_ui.web_server.set_aldialog_watchdog_controller(
+            pause_aldialog_watchdog,
+            resume_aldialog_watchdog
+        )
+    except Exception as e:
+        log("Impossible de configurer le contrôleur du watchdog ALDialog: {}".format(e), level='warning')
     _tablet_ui.start(show=True)
     chat_manager.attach_tablet(_tablet_ui)
 

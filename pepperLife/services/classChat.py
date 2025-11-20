@@ -416,7 +416,8 @@ class ChatManager(object):
                 vals = []
                 for _ in range(50):
                     with self.listener.lock:
-                        audio_chunk = b"" if not self.listener.mon else b"".join(self.listener.mon[-8:])
+                        mon_chunks = list(self.listener.mon)
+                        audio_chunk = b"" if not mon_chunks else b"".join(mon_chunks[-8:])
                     vals.append(avgabs(audio_chunk))
                     time.sleep(0.04)
                 base_override = int(sum(vals) / max(1, len(vals)))
@@ -454,8 +455,12 @@ class ChatManager(object):
                     self.log("Erreur en attente de la fin de la parole: {}".format(exc), level='error')
                 self.log("Parole terminée, nettoyage des tampons audio et petite pause.", level='debug')
                 with self.listener.lock:
-                    self.listener.mon[:] = []
-                    self.listener.pre[:] = []
+                    try:
+                        self.listener.mon.clear()
+                        self.listener.pre.clear()
+                    except AttributeError:
+                        self.listener.mon[:] = []
+                        self.listener.pre[:] = []
                 time.sleep(0.2)
                 return time.time() - start_time
 
@@ -601,7 +606,8 @@ class ChatManager(object):
                         continue
 
                 with self.listener.lock:
-                    audio_chunk = b"" if not self.listener.mon else b"".join(self.listener.mon[-8:])
+                    mon_chunks = list(self.listener.mon)
+                    audio_chunk = b"" if not mon_chunks else b"".join(mon_chunks[-8:])
                 if avgabs(audio_chunk) < start_threshold:
                     time.sleep(0.05)
                     continue
@@ -616,7 +622,8 @@ class ChatManager(object):
                     last = t0
                     while time.time() - t0 < 5.0:
                         with self.listener.lock:
-                            recent = b"" if not self.listener.mon else b"".join(self.listener.mon[-3:])
+                            mon_chunks = list(self.listener.mon)
+                            recent = b"" if not mon_chunks else b"".join(mon_chunks[-3:])
                         fr = recent[-320:] if len(recent) >= 320 else recent
                         energy = avgabs(fr)
                         if energy >= stop_threshold:
@@ -770,6 +777,10 @@ class ChatManager(object):
                 self.chat_state['status'] = 'stopped'
             try:
                 self.listener.stop()
+            except Exception:
+                pass
+            try:
+                self.vision_service.stop_camera()
             except Exception:
                 pass
 

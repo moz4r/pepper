@@ -110,6 +110,8 @@ export class RobotVirtuelPepper {
       lastKey: null,
       tabletNode: null,
     };
+    this._lastWidth = 0;
+    this._lastHeight = 0;
     this.handleResize = this.handleResize.bind(this);
     this.animate = this.animate.bind(this);
   }
@@ -169,7 +171,11 @@ export class RobotVirtuelPepper {
     this.camera.position.set(1.7, 1.1, 2.2);
     this.renderer = new THREE.WebGLRenderer({ antialias: true, alpha: true });
     this.renderer.setPixelRatio(window.devicePixelRatio || 1);
-    this.renderer.setSize(this.container.clientWidth, Math.max(this.container.clientHeight, 1));
+    const initWidth = this.container.clientWidth || 1;
+    const initHeight = Math.max(this.container.clientHeight, 1);
+    this.renderer.setSize(initWidth, initHeight);
+    this._lastWidth = initWidth;
+    this._lastHeight = initHeight;
     if ('outputColorSpace' in this.renderer) {
       this.renderer.outputColorSpace = THREE.SRGBColorSpace;
     } else if ('outputEncoding' in this.renderer) {
@@ -876,6 +882,11 @@ export class RobotVirtuelPepper {
     if (!this.renderer || !this.camera || !this.container) return;
     const width = this.container.clientWidth || 1;
     const height = this.container.clientHeight || 1;
+    if (Math.abs(width - this._lastWidth) < 1 && Math.abs(height - this._lastHeight) < 1) {
+      return;
+    }
+    this._lastWidth = width;
+    this._lastHeight = height;
     this.renderer.setSize(width, height);
     this.camera.aspect = width / height;
     this.camera.updateProjectionMatrix();
