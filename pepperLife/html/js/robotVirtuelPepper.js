@@ -5,6 +5,8 @@ const ROBOT_VIRTUEL_VERSION = 'hud-battery-20240610-01';
 const MODEL_GROUND_OFFSET = 0.07; // lifts Pepper to compensate for wheel geometry offset
 const GROUND_EXTRA_CLEARANCE = 0.015;
 const DEFAULT_GROUND_PADDING = -MODEL_GROUND_OFFSET - GROUND_EXTRA_CLEARANCE;
+let pepperModelLoading = null;
+let pepperModelCache = null;
 const BATTERY_HUD_ALIGNMENT = {
   position: { x: 0, y: -0.013, z: 0.038 },
   rotation: {
@@ -237,6 +239,20 @@ export class RobotVirtuelPepper {
     this.resizeObserver.observe(this.container);
   }
   async loadModel() {
+    const getPepperModel = async () => {
+      if (pepperModelCache) return pepperModelCache;
+      if (pepperModelLoading) return pepperModelLoading;
+      pepperModelLoading = this.loader.loadAsync(this.modelUrl)
+        .then((gltf) => {
+          pepperModelCache = gltf;
+          return gltf;
+        })
+        .catch((err) => {
+          pepperModelLoading = null;
+          throw err;
+        });
+      return pepperModelLoading;
+    };
     this.baseCompensation = null;
     const nodeLookup = new Map();
     JOINT_MAPPINGS.forEach((cfg) => {
@@ -246,27 +262,27 @@ export class RobotVirtuelPepper {
       nodeLookup.get(cfg.node).push(cfg);
     });
     await new Promise((resolve, reject) => {
-      this.loader.load(
-        this.modelUrl,
-        (gltf) => {
+      getPepperModel()
+        .then((gltf) => {
           if (this.isDisposed || !this.scene) {
             resolve();
             return;
           }
-          gltf.scene.position.set(0, 0, 0);
-          gltf.scene.scale.setScalar(1.25);
+          const gltfScene = gltf.scene.clone(true);
+          gltfScene.position.set(0, 0, 0);
+          gltfScene.scale.setScalar(1.25);
           const group = new this.THREE.Group();
           group.name = 'RobotVirtuelRoot';
-          group.add(gltf.scene);
+          group.add(gltfScene);
           const orientationFix = new this.THREE.Euler(-Math.PI / 2, 0, 0, 'XYZ');
-          gltf.scene.rotation.copy(orientationFix);
+          gltfScene.rotation.copy(orientationFix);
           this.scene.add(group);
           this.modelRoot = group;
           const box = new this.THREE.Box3().setFromObject(group);
           const size = box.getSize(new this.THREE.Vector3());
           const center = box.getCenter(new this.THREE.Vector3());
-          gltf.scene.position.sub(center);
-          gltf.scene.position.y += size.y / 2;
+          gltfScene.position.sub(center);
+          gltfScene.position.y += size.y / 2;
           const yawFacingCamera = -Math.PI / 2;
           group.rotation.y = yawFacingCamera;
           const focusY = Math.max(size.y * 0.48, 0.8);
@@ -287,20 +303,20 @@ export class RobotVirtuelPepper {
           this.controls.update();
           this.camera.lookAt(this.controls.target);
           this.scene.updateMatrixWorld(true);
-          const sceneBounds = new this.THREE.Box3().setFromObject(gltf.scene);
+          const sceneBounds = new this.THREE.Box3().setFromObject(gltfScene);
           if (Number.isFinite(sceneBounds.min.y) && Math.abs(sceneBounds.min.y) > 1e-5) {
             const lift = -sceneBounds.min.y;
-            gltf.scene.position.y += lift;
-            gltf.scene.updateMatrixWorld(true);
+            gltfScene.position.y += lift;
+            gltfScene.updateMatrixWorld(true);
             this.scene.updateMatrixWorld(true);
           }
           if (typeof this.modelGroundOffset === 'number' && Math.abs(this.modelGroundOffset) > 1e-6) {
-            gltf.scene.position.y += this.modelGroundOffset;
-            gltf.scene.updateMatrixWorld(true);
+            gltfScene.position.y += this.modelGroundOffset;
+            gltfScene.updateMatrixWorld(true);
             this.scene.updateMatrixWorld(true);
           }
           let baseCompensation = null;
-          const findNode = (name) => gltf.scene.getObjectByName(name);
+          const findNode = (name) => gltfScene.getObjectByName(name);
           const kneeNode = findNode('KneePitch_link');
           const aboveKneeNode = findNode('PepperAboveKnee');
           const upperBodyNode = findNode('PepperUpperBody');
@@ -394,7 +410,7 @@ export class RobotVirtuelPepper {
             };
           }
           this.updateGroundPlane({
-            sceneRoot: gltf.scene,
+            sceneRoot: gltfScene,
             nodeNames: [
               'WheelB_link_visual_0',
               'WheelFL_link_visual_0',
@@ -405,35 +421,35 @@ export class RobotVirtuelPepper {
               'PepperBaseHelper',
             ],
           });
-        gltf.scene.traverse((obj) => {
-          const cfgList = nodeLookup.get(obj.name);
-          if (!cfgList) return;
-          cfgList.forEach((cfg) => {
-            const axis = new this.THREE.Vector3().fromArray(cfg.axis).normalize();
-            const controller = {
-              joint: cfg.joint,
-              object: obj,
-              initial: obj.quaternion.clone(),
-              axis,
-              scale: cfg.inputScale !== undefined ? cfg.inputScale : 1,
-              shift: cfg.inputOffset || 0,
-              neutral: cfg.neutral || 0,
-              currentAngle: cfg.neutral || 0,
-              targetAngle: cfg.neutral || 0,
-              hasLiveData: false,
-              lastLiveTime: 0,
-              liveSmoothing: cfg.liveSmoothing || 6.0,
-              idleSmoothing: cfg.idleSmoothing || 2.0,
-              bounds: cfg.bounds || null,
-            };
-            if (typeof controller.neutral === 'number' && controller.object) {
-              controller.object.quaternion.copy(controller.initial);
-              const neutralQuat = new this.THREE.Quaternion().setFromAxisAngle(controller.axis, controller.neutral);
-              controller.object.quaternion.multiply(neutralQuat);
-            }
-            this.jointState.set(cfg.joint, controller);
+          gltfScene.traverse((obj) => {
+            const cfgList = nodeLookup.get(obj.name);
+            if (!cfgList) return;
+            cfgList.forEach((cfg) => {
+              const axis = new this.THREE.Vector3().fromArray(cfg.axis).normalize();
+              const controller = {
+                joint: cfg.joint,
+                object: obj,
+                initial: obj.quaternion.clone(),
+                axis,
+                scale: cfg.inputScale !== undefined ? cfg.inputScale : 1,
+                shift: cfg.inputOffset || 0,
+                neutral: cfg.neutral || 0,
+                currentAngle: cfg.neutral || 0,
+                targetAngle: cfg.neutral || 0,
+                hasLiveData: false,
+                lastLiveTime: 0,
+                liveSmoothing: cfg.liveSmoothing || 6.0,
+                idleSmoothing: cfg.idleSmoothing || 2.0,
+                bounds: cfg.bounds || null,
+              };
+              if (typeof controller.neutral === 'number' && controller.object) {
+                controller.object.quaternion.copy(controller.initial);
+                const neutralQuat = new this.THREE.Quaternion().setFromAxisAngle(controller.axis, controller.neutral);
+                controller.object.quaternion.multiply(neutralQuat);
+              }
+              this.jointState.set(cfg.joint, controller);
+            });
           });
-        });
           const hipPitchState = this.jointState.get('HipPitch');
           const hipRollState = this.jointState.get('HipRoll');
           const kneeState = this.jointState.get('KneePitch');
@@ -474,8 +490,8 @@ export class RobotVirtuelPepper {
             upperRoll: createdPivots.upperRoll || null,
             knee: createdPivots.knee,
           };
-          this.setupBatteryHUD(gltf.scene);
-          const tabletNode = gltf.scene.getObjectByName('Tablet') || gltf.scene.getObjectByName('Tablet_display');
+          this.setupBatteryHUD(gltfScene);
+          const tabletNode = gltfScene.getObjectByName('Tablet') || gltfScene.getObjectByName('Tablet_display');
           this.baseCompensation = baseCompensation;
           this.ready = true;
           this.container.dataset.state = 'ready';
@@ -484,10 +500,8 @@ export class RobotVirtuelPepper {
             this.pendingAngles = null;
           }
           resolve();
-        },
-        undefined,
-        (err) => reject(err),
-      );
+        })
+        .catch((err) => reject(err));
     });
   }
   start() {

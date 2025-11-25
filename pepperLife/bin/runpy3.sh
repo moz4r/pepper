@@ -12,9 +12,9 @@ export PATH="$SCRIPT_DIR:$PATH"
 # fix 2.5
 export LD_LIBRARY_PATH="/home/nao/.local/share/PackageManager/apps/pepperlife/bin/lib:${LD_LIBRARY_PATH}"
 
-# 2) Désactiver le user site-packages & pointer explicitement le site-packages Py3
+# 2) Désactiver le user site-packages & pointer explicitement le site-packages Py3 + cible locale pepperlife
 export PYTHONNOUSERSITE=1
-export PYTHONPATH="/home/nao/.local/share/PackageManager/apps/python3nao/lib/python3.9/site-packages"
+export PYTHONPATH="/home/nao/.local/share/PackageManager/apps/python3nao/lib/python3.9/site-packages:/home/nao/.local/share/PackageManager/apps/pepperlife/lib/python3.9/site-packages"
 
 
 # Check if any parameters were passed

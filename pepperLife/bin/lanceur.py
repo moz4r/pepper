@@ -119,12 +119,73 @@ class LauncherService:
             return self._naoqi_version
         version = read_naoqi_version_from_file()
         if version:
-            self._naoqi_version = version
-            self._naoqi_version_tuple = self._parse_version_tuple(version)
-            return self._naoqi_version
+            return self._cache_version(version, source='fichier naoqi_version')
+
+        version = self._get_naoqi_version_via_al_system()
+        if version:
+            return self._cache_version(version, source='ALSystem')
+
+        version = self._get_naoqi_version_via_lsb_release()
+        if version:
+            return self._cache_version(version, source='lsb-release')
+
+        version = self._get_naoqi_version_via_env()
+        if version:
+            return self._cache_version(version, source="variables d'environnement")
+
         self._naoqi_version = None
         self._naoqi_version_tuple = None
-        self.logger.debug("Impossible de lire la version NAOqi depuis le fichier système.")
+        self.logger.warning("Impossible de récupérer la version NAOqi via fichier/ALSystem/lsb/env.")
+        return None
+
+    def _cache_version(self, version, source='inconnu'):
+        self._naoqi_version = version
+        self._naoqi_version_tuple = self._parse_version_tuple(version)
+        self.logger.info("Version de NAOqi détectée (%s): %s", source, version)
+        return self._naoqi_version
+
+    def _get_naoqi_version_via_al_system(self):
+        al_system = self._svc("ALSystem")
+        if not al_system:
+            return None
+        for attr in ("systemVersion", "version"):
+            fn = getattr(al_system, attr, None)
+            if not callable(fn):
+                continue
+            try:
+                candidate = fn()
+                if candidate:
+                    return str(candidate).strip()
+            except Exception as exc:
+                self.logger.debug("Lecture NAOqi via ALSystem.%s échouée: %s", attr, exc)
+        return None
+
+    def _read_lsb_release(self, path):
+        if not os.path.isfile(path):
+            return None
+        try:
+            with open(path, 'r') as fh:
+                for line in fh:
+                    if not line.startswith('DISTRIB_RELEASE='):
+                        continue
+                    release = line.split('=', 1)[1].strip().strip('"')
+                    return release or None
+        except Exception as exc:
+            self.logger.debug("Lecture de %s impossible: %s", path, exc)
+        return None
+
+    def _get_naoqi_version_via_lsb_release(self):
+        for path in ('/opt/etc/lsb-release', '/opt/aldebaran/etc/lsb-release', '/etc/lsb-release'):
+            release = self._read_lsb_release(path)
+            if release:
+                return release
+        return None
+
+    def _get_naoqi_version_via_env(self):
+        for key in ('PEPPER_NAOQI_VERSION', 'NAOQI_VERSION'):
+            env_value = os.environ.get(key)
+            if env_value:
+                return env_value.strip()
         return None
 
     def is_naoqi_29_or_newer(self):
@@ -416,9 +477,35 @@ class LauncherService:
             self.logger.error("Erreur lors de l'arrêt du processus: {}".format(e))
             return False
 
+    def _is_pepper_life_service_available(self):
+        try:
+            svc = self.session.service("PepperLifeService")
+            return bool(svc)
+        except Exception as exc:
+            self.logger.debug("Vérification PepperLifeService indisponible: %s", exc)
+            return False
+
     def start_pepper_life_service(self):
         self.logger.info("Tentative de démarrage du service PepperLife NaoQI...")
+        if self._is_pepper_life_service_available():
+            self.logger.info("  -> Service PepperLife déjà enregistré. Aucun nouveau lancement.")
+            self.service_status = "OK"
+            self.logs.append("Service PepperLife NaoQI : déjà actif")
+            return True
         runner_path = self._get_runner_path()
+
+        # Choix du service: NAOqi 2.1 -> service Py2; sinon service Py3
+        naoqi_version = self.getVersion()
+        use_py2_service = bool(naoqi_version and naoqi_version.startswith("2.1"))
+        if use_py2_service:
+            service_script_path = '/home/nao/.local/share/PackageManager/apps/pepperlife/bin/pepper_life_service_nao21.py'
+            runner_path_py2 = '/usr/bin/python2.7'
+            if os.path.exists(runner_path_py2):
+                runner_path = runner_path_py2
+            else:
+                self.logger.warning("Python2.7 introuvable, utilisation du runner par défaut pour le service Py2 NAOqi 2.1.")
+        else:
+            service_script_path = '/home/nao/.local/share/PackageManager/apps/pepperlife/bin/pepper_life_service.py'
 
         if not os.path.exists(runner_path):
             self.logger.error("  -> Le lanceur Python 3 est introuvable. Impossible de démarrer le service.")
@@ -427,22 +514,31 @@ class LauncherService:
 
         self._ensure_runner_executable(runner_path)
 
-        service_script_path = '/home/nao/.local/share/PackageManager/apps/pepperlife/bin/pepper_life_service.py'
+        self.logger.info("  -> Script service choisi: %s (runner: %s)", service_script_path, runner_path)
         command = [runner_path, service_script_path]
 
         try:
             subprocess.Popen(command, preexec_fn=os.setsid, env=self._build_child_env())
-            self.logger.info("  -> Commande de lancement envoyée. Attente de 3 secondes pour la vérification...")
-            time.sleep(3)
-
-            self.session.service("PepperLifeService")
-            self.service_status = "OK"
-            self.logger.info("  -> VÃ©rification rÃ©ussie. Service PepperLife NaoQI : OK")
-            self.logs.append("Service PepperLife NaoQI : OK")
-            return True
+            self.logger.info("  -> Commande de lancement envoyée. Attente pour la vérification du service...")
+            # Boucle de vérification plus tolérante : plusieurs tentatives espacées
+            for attempt in range(6):  # environ 6 secondes max
+                time.sleep(1)
+                try:
+                    if self._is_pepper_life_service_available():
+                        self.service_status = "OK"
+                        self.logger.info("  -> Vérification réussie (tentative %s). Service PepperLife NaoQI : OK", attempt + 1)
+                        self.logs.append("Service PepperLife NaoQI : OK")
+                        return True
+                except Exception as exc:
+                    self.logger.debug("  -> Vérification tentative %s échouée: %s", attempt + 1, exc)
+            # Si les tentatives échouent mais le process est lancé, on loggue un warning
+            self.service_status = "FAILED"
+            self.logger.error("  -> Échec du démarrage ou de la vérification du service PepperLife (timeout).")
+            self.logs.append("Service PepperLife NaoQI : FAILED (timeout)")
+            return False
         except Exception as e:
             self.service_status = "FAILED"
-            self.logger.error("  -> Ã‰chec du dÃ©marrage ou de la vÃ©rification du service PepperLife: {}".format(e))
+            self.logger.error("  -> Échec du démarrage ou de la vérification du service PepperLife: {}".format(e))
             self.logs.append("Service PepperLife NaoQI : FAILED ({})".format(e))
             return False
 

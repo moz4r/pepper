@@ -31,6 +31,7 @@ class bcolors:
 class version(object):
     _here = os.path.dirname(os.path.abspath(__file__))
     version_path = os.path.join(os.path.dirname(_here), "version")
+    manifest_path = os.path.join(os.path.dirname(_here), "manifest.xml")
     _cached_pkg_version = None
 
     @classmethod
@@ -44,6 +45,9 @@ class version(object):
                     return f.read().strip() or default
         except Exception:
             pass
+        manifest_version = cls._get_manifest_version()
+        if manifest_version:
+            return manifest_version
         return default
 
     @classmethod
@@ -77,6 +81,28 @@ class version(object):
                         if cls._cached_pkg_version:
                             cls._cached_pkg_version = cls._cached_pkg_version.strip()
                         return cls._cached_pkg_version or None
+        except Exception:
+            return None
+        return None
+
+    @classmethod
+    def _get_manifest_version(cls):
+        """Fallback: lit la version depuis manifest.xml (paquet PepperLife)."""
+        try:
+            if not os.path.isfile(cls.manifest_path):
+                return None
+            tree = None
+            try:
+                import xml.etree.ElementTree as ET
+                tree = ET.parse(cls.manifest_path)
+            except Exception:
+                return None
+            root = tree.getroot() if tree else None
+            if root is None:
+                return None
+            version = root.attrib.get('version') if hasattr(root, 'attrib') else None
+            if version:
+                return str(version).strip()
         except Exception:
             return None
         return None

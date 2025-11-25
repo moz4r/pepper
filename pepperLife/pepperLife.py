@@ -40,6 +40,112 @@ def _logger(msg, **kwargs):
 
 def install_requirements(packages_to_install):
     import subprocess
+    script_dir = os.path.dirname(os.path.abspath(__file__))
+    naoqi_version, _ = _get_env_naoqi_version()
+
+    def _ensure_executable(path):
+        try:
+            st = os.stat(path)
+            if not (st.st_mode & 0o111):
+                os.chmod(path, st.st_mode | 0o755)
+        except Exception:
+            pass
+
+    def _runner_env():
+        # Env minimal pour laisser runpy3.sh poser ses propres variables (LD_LIBRARY_PATH, etc.)
+        env = {
+            "PIP_SKIP_UNAME": "1",
+            "HOME": os.environ.get("HOME", "/home/nao"),
+            "LANG": "C",
+            "LC_ALL": "C",
+            "PATH": os.environ.get("PATH", "/usr/bin:/bin"),
+        }
+        return env
+
+    def _ensure_local_site(path):
+        if path and os.path.isdir(path) and path not in sys.path:
+            sys.path.insert(0, path)
+            try:
+                import site
+                site.addsitedir(path)
+            except Exception:
+                pass
+
+    # Cas NAOqi 2.1 : utiliser runpy3 de python3nao + PIP_SKIP_UNAME + target local
+    if naoqi_version and naoqi_version.startswith("2.1"):
+        runner = "/home/nao/.local/share/PackageManager/apps/python3nao/bin/runpy3.sh"
+        if os.path.exists(runner):
+            _ensure_executable(runner)
+        else:
+            runner = None
+        target_dir = os.path.join(script_dir, "lib", "python3.9", "site-packages")
+        if not runner:
+            log("runpy3.sh (python3nao) introuvable, fallback pip classique.", level='warning', color=bcolors.WARNING)
+        else:
+            env = _runner_env()
+            if not os.path.isdir(target_dir):
+                try:
+                    os.makedirs(target_dir)
+                except Exception:
+                    pass
+            _ensure_local_site(target_dir)  # s'assurer que le target local est utilisable juste après création
+            try:
+                log("Mise à jour de pip (NAOqi 2.1)...", level='info')
+                subprocess.check_call([runner, "-m", "pip", "install", "--upgrade", "--no-cache-dir", "pip"], env=env)
+            except Exception as e:
+                log("Impossible de mettre pip à jour (continu): {}".format(e), level='warning', color=bcolors.WARNING)
+            for req in packages_to_install:
+                try:
+                    log("Installation de {} (target local)...".format(req), level='info')
+                    subprocess.check_call([runner, "-m", "pip", "install", "--upgrade", "--no-cache-dir", "--target", target_dir, req], env=env)
+                except subprocess.CalledProcessError as e:
+                    log("Erreur lors de l'installation de {}: {}".format(req, e), level='error', color=bcolors.FAIL)
+                    sys.exit(1)
+                except Exception as e:
+                    log("Une erreur inattendue est survenue: {}".format(e), level='error', color=bcolors.FAIL)
+                    sys.exit(1)
+            _ensure_local_site(target_dir)
+            log("Dépendances installées (NAOqi 2.1).", level='info', color=bcolors.OKGREEN)
+            return
+
+    # Cas NAOqi 2.5 : utiliser runpy3 packagé dans pepperlife + PIP_SKIP_UNAME + target local
+    if naoqi_version and naoqi_version.startswith("2.5"):
+        runner = "/home/nao/.local/share/PackageManager/apps/pepperlife/bin/runpy3.sh"
+        if os.path.exists(runner):
+            _ensure_executable(runner)
+        else:
+            runner = None
+        target_dir = os.path.join(script_dir, "lib", "python3.9", "site-packages")
+        if not runner:
+            log("runpy3.sh (pepperlife) introuvable, fallback pip classique.", level='warning', color=bcolors.WARNING)
+        else:
+            env = _runner_env()
+            if not os.path.isdir(target_dir):
+                try:
+                    os.makedirs(target_dir)
+                except Exception:
+                    pass
+            _ensure_local_site(target_dir)  # assure la dispo immédiate du site-packages local après création
+            try:
+                log("Mise à jour de pip (NAOqi 2.5)...", level='info')
+                subprocess.check_call([runner, "-m", "pip", "install", "--upgrade", "pip"], env=env)
+            except Exception as e:
+                log("Impossible de mettre pip à jour: {}".format(e), level='warning', color=bcolors.WARNING)
+            for req in packages_to_install:
+                try:
+                    log("Installation de {} (target local)...".format(req), level='info')
+                    subprocess.check_call([runner, "-m", "pip", "install", "--upgrade", "--target", target_dir, req], env=env)
+                except subprocess.CalledProcessError as e:
+                    log("Erreur lors de l'installation de {}: {}".format(req, e), level='error', color=bcolors.FAIL)
+                    sys.exit(1)
+                except Exception as e:
+                    log("Une erreur inattendue est survenue: {}".format(e), level='error', color=bcolors.FAIL)
+                    sys.exit(1)
+            _ensure_local_site(target_dir)
+            log("Dépendances installées (NAOqi 2.5).", level='info', color=bcolors.OKGREEN)
+            return
+
+    # Cas par défaut (NAOqi 2.9+) : pip3 standard
     pip_executable = "/home/nao/.local/share/PackageManager/apps/python3nao/bin/pip3"
     if not os.path.exists(pip_executable):
         pip_executable = "pip"
@@ -73,6 +179,7 @@ def install_requirements(packages_to_install):
 
 def check_requirements():
     import os
+    import importlib
     try:
         import pkg_resources
     except ImportError:
@@ -84,6 +191,24 @@ def check_requirements():
         install_requirements(requirements)
         return
     script_dir = os.path.dirname(os.path.abspath(__file__))
+    # S'assurer que les site-packages locaux (2.1/2.5) sont dans sys.path
+    local_site = os.path.join(script_dir, "lib", "python3.9", "site-packages")
+    if os.path.isdir(local_site) and local_site not in sys.path:
+        sys.path.insert(0, local_site)
+        try:
+            import site
+            site.addsitedir(local_site)
+        except Exception:
+            pass
+        try:
+            pkg_resources = importlib.reload(pkg_resources)
+            _, is_29 = _get_env_naoqi_version()
+            if not is_29:
+                fresh_ws = pkg_resources.WorkingSet([local_site])
+                pkg_resources._initialize_master_working_set()  # refresh default
+        except Exception:
+            pass
+
     requirements_path = os.path.join(script_dir, 'requirements.txt')
     if not os.path.exists(requirements_path):
         log("requirements.txt introuvable.", level='warning', color=bcolors.WARNING)
@@ -158,12 +283,30 @@ def main():
         sys.exit(1)
 
     al_dialog = s.service("ALDialog")
+    try:
+        al_memory = s.service("ALMemory")
+    except Exception as e:
+        log("Impossible de récupérer ALMemory: {}".format(e), level='warning')
+        al_memory = None
     chat_manager = None
 
     autolife_stop_event = threading.Event()
     aldialog_watchdog_pause = threading.Event()
     def autolife_watchdog(stop_event, is_29_version):
         log("Démarrage du watchdog pour ALAutonomousLife et ALDialog.", level='info')
+
+        def _mem_flag_as_bool(value):
+            # ALMemory peut renvoyer 0/1, bool, ou des chaînes "0"/"1" ; normaliser pour éviter les faux positifs
+            if isinstance(value, bool):
+                return value
+            if isinstance(value, (int, float)):
+                return value != 0
+            if isinstance(value, str):
+                lowered = value.strip().lower()
+                if lowered in ('', '0', 'false', 'none', 'no', 'non', 'off'):
+                    return False
+                return True
+            return bool(value)
 
         try:
             autolife = s.service("ALAutonomousLife")
@@ -178,40 +321,51 @@ def main():
                     
                     # Déterminer si ALDialog est actif en utilisant la méthode appropriée
                     is_dialog_active = False
+                    status_checked = False
                     try:
-                        status_info = None
-                        if hasattr(al_dialog, 'getStatus'):
-                            status_info = al_dialog.getStatus()
-                            log("Watchdog: ALDialog.getStatus() -> {}".format(status_info), level='debug')
-                        state_label = None
-                        if isinstance(status_info, dict):
-                            state_label = status_info.get('state') or status_info.get('status')
-                        elif isinstance(status_info, (list, tuple)) and status_info:
-                            state_label = status_info[0]
-                        elif isinstance(status_info, str):
-                            state_label = status_info
-                        if isinstance(state_label, str):
-                            lowered = state_label.lower()
-                            if any(token in lowered for token in ('run', 'running', 'actif', 'active', 'start', 'listening')):
-                                is_dialog_active = True
-                        if not is_dialog_active and hasattr(al_dialog, 'getAllLoadedTopics'):
-                            try:
-                                topics = al_dialog.getAllLoadedTopics()
-                                log("Watchdog: ALDialog.getAllLoadedTopics() -> {}".format(topics), level='debug')
-                            except Exception:
-                                pass
-                        if not is_dialog_active and hasattr(al_dialog, 'isDialogRunning'):
-                            try:
-                                is_dialog_active = bool(al_dialog.isDialogRunning())
-                            except Exception:
-                                pass
-                        if not is_dialog_active and hasattr(al_dialog, 'isListening'):
-                            try:
-                                is_dialog_active = bool(al_dialog.isListening())
-                            except Exception:
-                                pass
+                        if al_memory:
+                            mem_flag = al_memory.getData("Dialog/IsStarted")
+                            is_dialog_active = _mem_flag_as_bool(mem_flag)
+                            status_checked = True
+                            log("Watchdog: ALMemory Dialog/IsStarted (brut) -> {} | interprété -> {}".format(mem_flag, is_dialog_active), level='debug')
                     except Exception as e:
-                        log("Watchdog: Impossible de vérifier l'état de ALDialog: {}".format(e), level='debug')
+                        log("Watchdog: Impossible de vérifier l'état de ALDialog via ALMemory: {}".format(e), level='debug')
+
+                    if not status_checked:
+                        try:
+                            status_info = None
+                            if hasattr(al_dialog, 'getStatus'):
+                                status_info = al_dialog.getStatus()
+                                log("Watchdog: ALDialog.getStatus() -> {}".format(status_info), level='debug')
+                            state_label = None
+                            if isinstance(status_info, dict):
+                                state_label = status_info.get('state') or status_info.get('status')
+                            elif isinstance(status_info, (list, tuple)) and status_info:
+                                state_label = status_info[0]
+                            elif isinstance(status_info, str):
+                                state_label = status_info
+                            if isinstance(state_label, str):
+                                lowered = state_label.lower()
+                                if any(token in lowered for token in ('run', 'running', 'actif', 'active', 'start', 'listening')):
+                                    is_dialog_active = True
+                            if not is_dialog_active and hasattr(al_dialog, 'getAllLoadedTopics'):
+                                try:
+                                    topics = al_dialog.getAllLoadedTopics()
+                                    log("Watchdog: ALDialog.getAllLoadedTopics() -> {}".format(topics), level='debug')
+                                except Exception:
+                                    pass
+                            if not is_dialog_active and hasattr(al_dialog, 'isDialogRunning'):
+                                try:
+                                    is_dialog_active = bool(al_dialog.isDialogRunning())
+                                except Exception:
+                                    pass
+                            if not is_dialog_active and hasattr(al_dialog, 'isListening'):
+                                try:
+                                    is_dialog_active = bool(al_dialog.isListening())
+                                except Exception:
+                                    pass
+                        except Exception as e:
+                            log("Watchdog: Impossible de vérifier l'état de ALDialog: {}".format(e), level='debug')
 
                     if is_gpt_running:
                         if not is_29_version and is_dialog_active:

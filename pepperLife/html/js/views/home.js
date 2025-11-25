@@ -635,13 +635,17 @@ function updateRobotStatus(status, data = null) {
     // Ensuite, vérifie les mises à jour, mais une seule fois
     if (!versionCheckDone) {
       versionCheckDone = true; // Set flag to true
-      fetch('https://raw.githubusercontent.com/moz4r/pepper/refs/heads/main/pepperLife/version')
+      fetch('https://raw.githubusercontent.com/moz4r/pepper/refs/heads/main/pepperLife/manifest.xml')
         .then(response => {
           if (!response.ok) { throw new Error('La réponse du réseau n\'était pas ok'); }
           return response.text();
         })
         .then(text => {
-          const remoteVersion = text.trim();
+          let remoteVersion = '';
+          const m = /version\\s*=\\s*\"([^\"]+)\"/i.exec(text || '');
+          if (m && m[1]) {
+            remoteVersion = m[1].trim();
+          }
           let statusText = '';
           if (remoteVersion) {
             const remoteParsed = parseVersionString(remoteVersion);

@@ -1,5 +1,5 @@
 <?xml version="1.0" encoding="UTF-8"?>
-<package uuid="pepperlife" version="1.6.1" author="Anthony Gallot">
+<package uuid="pepperlife" version="1.7.3" author="Anthony Gallot">
     <names>
         <name lang="en_US">PepperLife GPT</name>
         <name lang="fr_FR">PepperLife GPT</name>
@@ -9,13 +9,14 @@
         <description lang="fr_FR">PepperLife robot settings et gpt ( http://IPROBOT:8080 )</description>
     </descriptions>
     <services>
-        <service autorun="true" name="pepperlife" execStart="python2 bin/lanceur.py"/>
+        <!-- Utilise python2 système avec un chemin absolu pour compat NAOqi 2.1/2.5 -->
+        <service autorun="true" name="pepperlife" execStart="/usr/bin/python2 /home/nao/.local/share/PackageManager/apps/pepperlife/bin/lanceur.py"/>
     </services>
     <executableFiles>
         <file path="python"/>
     </executableFiles>
     <requirements>
-        <naoqiRequirement maxVersion="2.9" minVersion="2.9"/>
+        <naoqiRequirement maxVersion="2.9" minVersion="2.1"/>
         <robotRequirement model="JULIETTE"/>
         <robotRequirement model="NAO"/>
     </requirements>
