@@ -40,7 +40,7 @@ def _logger(msg, **kwargs):
 
 def install_requirements(packages_to_install):
     import subprocess
-    script_dir = os.path.dirname(os.path.abspath(__file__))
+    script_dir = os.path.realpath(os.path.dirname(os.path.abspath(__file__)))
     naoqi_version, _ = _get_env_naoqi_version()
 
     def _ensure_executable(path):
@@ -190,24 +190,32 @@ def check_requirements():
             requirements = [line.strip() for line in f if line.strip() and not line.startswith('#')]
         install_requirements(requirements)
         return
-    script_dir = os.path.dirname(os.path.abspath(__file__))
+    script_dir = os.path.realpath(os.path.dirname(os.path.abspath(__file__)))
     # S'assurer que les site-packages locaux (2.1/2.5) sont dans sys.path
-    local_site = os.path.join(script_dir, "lib", "python3.9", "site-packages")
-    if os.path.isdir(local_site) and local_site not in sys.path:
-        sys.path.insert(0, local_site)
-        try:
-            import site
-            site.addsitedir(local_site)
-        except Exception:
-            pass
-        try:
-            pkg_resources = importlib.reload(pkg_resources)
-            _, is_29 = _get_env_naoqi_version()
-            if not is_29:
-                fresh_ws = pkg_resources.WorkingSet([local_site])
-                pkg_resources._initialize_master_working_set()  # refresh default
-        except Exception:
-            pass
+    local_sites = [
+        os.path.join(script_dir, "lib", "python3.9", "site-packages"),
+        os.path.join(os.path.expanduser("~"), ".local", "share", "PackageManager", "apps", "pepperlife", "lib", "python3.9", "site-packages"),
+    ]
+    seen = set()
+    for local_site in local_sites:
+        if local_site in seen:
+            continue
+        seen.add(local_site)
+        if os.path.isdir(local_site) and local_site not in sys.path:
+            sys.path.insert(0, local_site)
+            try:
+                import site
+                site.addsitedir(local_site)
+            except Exception:
+                pass
+            try:
+                pkg_resources = importlib.reload(pkg_resources)
+                _, is_29 = _get_env_naoqi_version()
+                if not is_29:
+                    fresh_ws = pkg_resources.WorkingSet([local_site])
+                    pkg_resources._initialize_master_working_set()  # refresh default
+            except Exception:
+                pass
 
     requirements_path = os.path.join(script_dir, 'requirements.txt')
     if not os.path.exists(requirements_path):

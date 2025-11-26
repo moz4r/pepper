@@ -1713,7 +1713,8 @@ class WebServer(object):
 
             def _set_tts_language(self, payload):
                 try:
-                    lang = (payload or {}).get('lang')
+                    # Accepte 'lang' (nouveau) et 'language' (ancien front)
+                    lang = (payload or {}).get('lang') or (payload or {}).get('language')
                     if not lang:
                         self._json(400, {'error': 'Missing lang'}); return
                     tts = parent.svc('ALTextToSpeech')

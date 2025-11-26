@@ -243,7 +243,7 @@ export const api = {
   probeStt: (server, health) => jget('/api/stt/probe?server=' + encodeURIComponent(server || '') + (health ? '&health=' + encodeURIComponent(health) : '')),
   // TTS Language
   getTtsLanguages: () => jget('/api/tts/languages'),
-  setTtsLanguage: (lang) => jpost('/api/tts/set_language', { language: lang }),
+  setTtsLanguage: (lang) => jpost('/api/tts/set_language', { lang }),
   storeGetInfo: () => jget('/api/store/info'),
   storeStatus: () => jget('/api/store/status'),
   storeTestConnection: ({server, username, password} = {}) => jpost('/api/store/test_connection', {server, username, password}),
